@@ -25,10 +25,29 @@ import { useEditor } from "@/hooks/use-editor";
 import { useTranscribePrompt } from "@/hooks/use-transcribe-prompt";
 import { useEffect, useRef, useState } from "react";
 import type { TextElement } from "@/types/timeline";
+import type { TProject } from "@/types/project";
 import { BackgroundTasksWidget } from "@/components/editor/background-tasks";
 import { CommandPalette } from "@/components/editor/command-palette";
+import { EditorCore } from "@/core";
 
-const PENDING_IMPORT_KEY = "opencut:pending-import";
+function buildTProject(json: Record<string, unknown>): TProject {
+	return {
+		version: json.version as number,
+		metadata: {
+			...json.metadata as Record<string, unknown>,
+			createdAt: new Date((json.metadata as Record<string, string>).createdAt),
+			updatedAt: new Date((json.metadata as Record<string, string>).updatedAt),
+		},
+		scenes: (json.scenes as Array<Record<string, unknown>>).map((scene) => ({
+			...scene,
+			createdAt: new Date(scene.createdAt as string),
+			updatedAt: new Date(scene.updatedAt as string),
+		})),
+		currentSceneId: json.currentSceneId as string,
+		settings: json.settings,
+		timelineViewState: json.timelineViewState,
+	} as TProject;
+}
 
 export default function Editor() {
 	const params = useParams();
@@ -57,8 +76,16 @@ export default function Editor() {
 					return;
 				}
 
-				sessionStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(json));
-				window.location.replace(`/editor/${json.metadata.id}`);
+				try {
+					const project = buildTProject(json);
+					const editor = EditorCore.getInstance();
+					await editor.storage.saveProject({ project });
+					window.location.replace(`/editor/${project.metadata.id}`);
+				} catch (saveErr) {
+					console.error("[import] Save failed, using sessionStorage fallback:", saveErr);
+					sessionStorage.setItem("opencut:pending-import", JSON.stringify(json));
+					window.location.replace(`/editor/${json.metadata.id as string}`);
+				}
 			} catch (err) {
 				console.error("[import] Failed:", err);
 				window.location.replace(`/editor/${projectId}`);
