@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams, useRouter } from "next/navigation";
 import {
 	ResizablePanelGroup,
 	ResizablePanel,
@@ -23,14 +23,87 @@ import { RightPanel } from "@/components/editor/panels/right-panel";
 import { useTranscriptStore } from "@/stores/transcript-store";
 import { useEditor } from "@/hooks/use-editor";
 import { useTranscribePrompt } from "@/hooks/use-transcribe-prompt";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TextElement } from "@/types/timeline";
+import type { TProject } from "@/types/project";
 import { BackgroundTasksWidget } from "@/components/editor/background-tasks";
 import { CommandPalette } from "@/components/editor/command-palette";
+import { EditorCore } from "@/core";
+
+/** Hiển thị khi đang import project từ Platform. */
+function ImportingScreen({ url }: { url: string }) {
+	return (
+		<div className="flex h-screen items-center justify-center bg-background">
+			<div className="text-center space-y-4">
+				<div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" />
+				<p className="text-sm text-muted-foreground">Importing project...</p>
+				<p className="text-xs text-muted-foreground/60 truncate max-w-md">{url}</p>
+			</div>
+		</div>
+	);
+}
 
 export default function Editor() {
 	const params = useParams();
 	const projectId = params.project_id as string;
+	const searchParams = useSearchParams();
+	const router = useRouter();
+	const importUrl = searchParams.get("import");
+	const [importing, setImporting] = useState(false);
+
+	useEffect(() => {
+		if (!importUrl) return;
+
+		async function importProject() {
+			setImporting(true);
+			try {
+				const res = await fetch(importUrl);
+				if (!res.ok) {
+					console.error(`[import] Fetch failed: ${res.status}`);
+					router.replace(`/editor/${projectId}`);
+					return;
+				}
+				const json = await res.json();
+
+				if (!json.metadata?.id || !Array.isArray(json.scenes) || json.version !== 10) {
+					console.error("[import] Invalid project format");
+					router.replace(`/editor/${projectId}`);
+					return;
+				}
+
+				const project: TProject = {
+					version: json.version,
+					metadata: {
+						...json.metadata,
+						createdAt: new Date(json.metadata.createdAt),
+						updatedAt: new Date(json.metadata.updatedAt),
+					},
+					scenes: json.scenes.map((scene: Record<string, unknown>) => ({
+						...scene,
+						createdAt: new Date(scene.createdAt as string),
+						updatedAt: new Date(scene.updatedAt as string),
+					})),
+					currentSceneId: json.currentSceneId,
+					settings: json.settings,
+					timelineViewState: json.timelineViewState,
+				} as TProject;
+
+				const editor = EditorCore.getInstance();
+				await editor.storage.saveProject({ project });
+
+				router.replace(`/editor/${project.metadata.id}`);
+			} catch (err) {
+				console.error("[import] Failed:", err);
+				router.replace(`/editor/${projectId}`);
+			}
+		}
+
+		importProject();
+	}, [importUrl, projectId, router]);
+
+	if (importing) {
+		return <ImportingScreen url={importUrl!} />;
+	}
 
 	return (
 		<MobileGate>
