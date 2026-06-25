@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams, useSearchParams, useRouter } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import {
 	ResizablePanelGroup,
 	ResizablePanel,
@@ -30,7 +30,27 @@ import { BackgroundTasksWidget } from "@/components/editor/background-tasks";
 import { CommandPalette } from "@/components/editor/command-palette";
 import { EditorCore } from "@/core";
 
-/** Hiển thị khi đang import project từ Platform. */
+const PENDING_IMPORT_KEY = "opencut:pending-import";
+
+function buildTProject(json: Record<string, unknown>): TProject {
+	return {
+		version: json.version as number,
+		metadata: {
+			...json.metadata as Record<string, unknown>,
+			createdAt: new Date((json.metadata as Record<string, string>).createdAt),
+			updatedAt: new Date((json.metadata as Record<string, string>).updatedAt),
+		},
+		scenes: (json.scenes as Array<Record<string, unknown>>).map((scene) => ({
+			...scene,
+			createdAt: new Date(scene.createdAt as string),
+			updatedAt: new Date(scene.updatedAt as string),
+		})),
+		currentSceneId: json.currentSceneId as string,
+		settings: json.settings,
+		timelineViewState: json.timelineViewState,
+	} as TProject;
+}
+
 function ImportingScreen({ url }: { url: string }) {
 	return (
 		<div className="flex h-screen items-center justify-center bg-background">
@@ -47,7 +67,6 @@ export default function Editor() {
 	const params = useParams();
 	const projectId = params.project_id as string;
 	const searchParams = useSearchParams();
-	const router = useRouter();
 	const importUrl = searchParams.get("import");
 	const [importing, setImporting] = useState(false);
 
@@ -59,47 +78,52 @@ export default function Editor() {
 			try {
 				const res = await fetch(importUrl);
 				if (!res.ok) {
-					console.error(`[import] Fetch failed: ${res.status}`);
-					router.replace(`/editor/${projectId}`);
+					console.error("[import] Fetch failed:", res.status);
+					window.location.replace(`/editor/${projectId}`);
 					return;
 				}
 				const json = await res.json();
 
 				if (!json.metadata?.id || !Array.isArray(json.scenes) || json.version !== 10) {
 					console.error("[import] Invalid project format");
-					router.replace(`/editor/${projectId}`);
+					window.location.replace(`/editor/${projectId}`);
 					return;
 				}
 
-				const project: TProject = {
-					version: json.version,
-					metadata: {
-						...json.metadata,
-						createdAt: new Date(json.metadata.createdAt),
-						updatedAt: new Date(json.metadata.updatedAt),
-					},
-					scenes: json.scenes.map((scene: Record<string, unknown>) => ({
-						...scene,
-						createdAt: new Date(scene.createdAt as string),
-						updatedAt: new Date(scene.updatedAt as string),
-					})),
-					currentSceneId: json.currentSceneId,
-					settings: json.settings,
-					timelineViewState: json.timelineViewState,
-				} as TProject;
-
-				const editor = EditorCore.getInstance();
-				await editor.storage.saveProject({ project });
-
-				router.replace(`/editor/${project.metadata.id}`);
+				sessionStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(json));
+				window.location.replace(`/editor/${json.metadata.id}`);
 			} catch (err) {
 				console.error("[import] Failed:", err);
-				router.replace(`/editor/${projectId}`);
+				window.location.replace(`/editor/${projectId}`);
 			}
 		}
 
 		importProject();
-	}, [importUrl, projectId, router]);
+	}, [importUrl, projectId]);
+
+	useEffect(() => {
+		if (importUrl) return;
+
+		const stored = sessionStorage.getItem(PENDING_IMPORT_KEY);
+		if (!stored) return;
+
+		sessionStorage.removeItem(PENDING_IMPORT_KEY);
+
+		try {
+			const json = JSON.parse(stored);
+			if (!json.metadata?.id) return;
+
+			const editor = EditorCore.getInstance();
+			const project = buildTProject(json);
+			editor.storage.saveProject({ project }).then(() => {
+				window.location.replace(`/editor/${project.metadata.id}`);
+			}).catch((err: unknown) => {
+				console.error("[import] Storage save failed:", err);
+			});
+		} catch (err) {
+			console.error("[import] Restore failed:", err);
+		}
+	}, [importUrl, projectId]);
 
 	if (importing) {
 		return <ImportingScreen url={importUrl!} />;
@@ -141,7 +165,6 @@ function EditorLayout() {
 	);
 	const hasTranscript = hasMedia && (transcriptSegments.length > 0 || isTranscribing);
 
-	// Restore transcript from existing caption text elements on the timeline
 	const hasRestoredTranscript = useRef(false);
 	useEffect(() => {
 		if (hasRestoredTranscript.current) return;
@@ -150,7 +173,6 @@ function EditorLayout() {
 
 		const tracks = editor.timeline.getTracks();
 
-		// Only restore if there's actually a video/audio on the timeline
 		const hasMedia = tracks.some(
 			(t) =>
 				(t.type === "video" || t.type === "audio") &&
@@ -163,7 +185,6 @@ function EditorLayout() {
 		);
 		if (!textTrack) return;
 
-		// Sort text elements by startTime
 		const sortedElements = [...textTrack.elements]
 			.sort((a, b) => a.startTime - b.startTime);
 
@@ -198,7 +219,6 @@ function EditorLayout() {
 		}
 	}, [editor]);
 
-	// Clear transcript when all video/audio elements are removed (any deletion path)
 	useEffect(() => {
 		return editor.timeline.subscribe(() => {
 			const { segments } = useTranscriptStore.getState();
@@ -276,7 +296,6 @@ function EditorLayout() {
 				</ResizablePanelGroup>
 			</ResizablePanel>
 
-			{/* Quick actions bar — appears between main content and timeline */}
 			{hasTranscript && (
 				<div className="flex justify-center px-3 py-1">
 					<QuickActionsBar />
