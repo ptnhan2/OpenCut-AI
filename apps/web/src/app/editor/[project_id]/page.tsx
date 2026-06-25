@@ -25,43 +25,10 @@ import { useEditor } from "@/hooks/use-editor";
 import { useTranscribePrompt } from "@/hooks/use-transcribe-prompt";
 import { useEffect, useRef, useState } from "react";
 import type { TextElement } from "@/types/timeline";
-import type { TProject } from "@/types/project";
 import { BackgroundTasksWidget } from "@/components/editor/background-tasks";
 import { CommandPalette } from "@/components/editor/command-palette";
-import { EditorCore } from "@/core";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
-
-function buildTProject(json: Record<string, unknown>): TProject {
-	return {
-		version: json.version as number,
-		metadata: {
-			...json.metadata as Record<string, unknown>,
-			createdAt: new Date((json.metadata as Record<string, string>).createdAt),
-			updatedAt: new Date((json.metadata as Record<string, string>).updatedAt),
-		},
-		scenes: (json.scenes as Array<Record<string, unknown>>).map((scene) => ({
-			...scene,
-			createdAt: new Date(scene.createdAt as string),
-			updatedAt: new Date(scene.updatedAt as string),
-		})),
-		currentSceneId: json.currentSceneId as string,
-		settings: json.settings,
-		timelineViewState: json.timelineViewState,
-	} as TProject;
-}
-
-function ImportingScreen({ url }: { url: string }) {
-	return (
-		<div className="flex h-screen items-center justify-center bg-background">
-			<div className="text-center space-y-4">
-				<div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" />
-				<p className="text-sm text-muted-foreground">Importing project...</p>
-				<p className="text-xs text-muted-foreground/60 truncate max-w-md">{url}</p>
-			</div>
-		</div>
-	);
-}
 
 export default function Editor() {
 	const params = useParams();
@@ -101,32 +68,15 @@ export default function Editor() {
 		importProject();
 	}, [importUrl, projectId]);
 
-	useEffect(() => {
-		if (importUrl) return;
-
-		const stored = sessionStorage.getItem(PENDING_IMPORT_KEY);
-		if (!stored) return;
-
-		sessionStorage.removeItem(PENDING_IMPORT_KEY);
-
-		try {
-			const json = JSON.parse(stored);
-			if (!json.metadata?.id) return;
-
-			const editor = EditorCore.getInstance();
-			const project = buildTProject(json);
-			editor.storage.saveProject({ project }).then(() => {
-				window.location.replace(`/editor/${project.metadata.id}`);
-			}).catch((err: unknown) => {
-				console.error("[import] Storage save failed:", err);
-			});
-		} catch (err) {
-			console.error("[import] Restore failed:", err);
-		}
-	}, [importUrl, projectId]);
-
 	if (importing) {
-		return <ImportingScreen url={importUrl!} />;
+		return (
+			<div className="flex h-screen items-center justify-center bg-background">
+				<div className="text-center space-y-4">
+					<div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" />
+					<p className="text-sm text-muted-foreground">Importing project...</p>
+				</div>
+			</div>
+		);
 	}
 
 	return (
