@@ -10,6 +10,47 @@ import {
 } from "@/hooks/use-keybindings";
 import { useEditorActions } from "@/hooks/actions/use-editor-actions";
 import { prefetchFontAtlas } from "@/lib/fonts/google-fonts";
+import type { TProject } from "@/types/project";
+
+const PENDING_IMPORT_KEY = "opencut:pending-import";
+
+function buildTProject(json: Record<string, unknown>): TProject {
+	return {
+		version: json.version as number,
+		metadata: {
+			...json.metadata as Record<string, unknown>,
+			createdAt: new Date((json.metadata as Record<string, string>).createdAt),
+			updatedAt: new Date((json.metadata as Record<string, string>).updatedAt),
+		},
+		scenes: (json.scenes as Array<Record<string, unknown>>).map((scene) => ({
+			...scene,
+			createdAt: new Date(scene.createdAt as string),
+			updatedAt: new Date(scene.updatedAt as string),
+		})),
+		currentSceneId: json.currentSceneId as string,
+		settings: json.settings,
+		timelineViewState: json.timelineViewState,
+	} as TProject;
+}
+
+async function tryRestorePendingImport(editor: ReturnType<typeof useEditor>): Promise<string | null> {
+	const stored = sessionStorage.getItem(PENDING_IMPORT_KEY);
+	if (!stored) return null;
+
+	sessionStorage.removeItem(PENDING_IMPORT_KEY);
+
+	try {
+		const json = JSON.parse(stored);
+		if (!json.metadata?.id || json.version !== 10) return null;
+
+		const project = buildTProject(json);
+		await editor.storage.saveProject({ project });
+		return project.metadata.id;
+	} catch (err) {
+		console.error("[EditorProvider] Import restore failed:", err);
+		return null;
+	}
+}
 
 interface EditorProviderProps {
 	projectId: string;
@@ -54,6 +95,12 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 				if (isNotFound) {
 					try {
+						const importedId = await tryRestorePendingImport(editor);
+						if (importedId) {
+							router.replace(`/editor/${importedId}`);
+							return;
+						}
+
 						const newProjectId = await editor.project.createNewProject({
 							name: "Untitled Project",
 						});
