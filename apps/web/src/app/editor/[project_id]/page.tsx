@@ -27,6 +27,44 @@ import { BackgroundTasksWidget } from "@/components/editor/background-tasks";
 import { CommandPalette } from "@/components/editor/command-palette";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
+const PLATFORM_BASE = "http://localhost:3000";
+
+function dataUrlSvg(color: string, label: string): string {
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><rect width="100%" height="100%" fill="${color}"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="Arial" font-size="48" fill="white" opacity="0.5">${label}</text></svg>`;
+	return "data:image/svg+xml," + encodeURIComponent(svg);
+}
+
+function postProcessProject(json: Record<string, unknown>, episodeId: string): Record<string, unknown> {
+	const scenes = json.scenes as Array<Record<string, unknown>>;
+	const colors = ["#1a1a2e", "#16213e", "#0f3460", "#533483", "#2d6a4f", "#7f4f24", "#582f0e", "#936639"];
+	let colorIdx = 0;
+
+	for (const scene of scenes) {
+		const tracks = scene.tracks as Array<Record<string, unknown>>;
+		for (const track of tracks) {
+			const elements = track.elements as Array<Record<string, unknown>>;
+			for (const el of elements) {
+				const elType = el.type as string;
+
+				if (elType === "video") {
+					const shotName = (el.name as string) || `Shot ${colorIdx}`;
+					el.mediaId = dataUrlSvg(colors[colorIdx % colors.length], shotName);
+					colorIdx++;
+				} else if (elType === "audio") {
+					const mediaId = el.mediaId as string;
+					if (mediaId?.startsWith("media-tts-")) {
+						const audioId = mediaId.replace("media-tts-", "");
+						el.sourceUrl = `${PLATFORM_BASE}/assets/audio/tts/aud_sb${audioId}.mp3`;
+						el.sourceType = "library";
+						delete el.mediaId;
+					}
+				}
+			}
+		}
+	}
+
+	return json;
+}
 
 export default function Editor() {
 	const params = useParams();
@@ -47,7 +85,8 @@ export default function Editor() {
 				if (!json.metadata?.id || !Array.isArray(json.scenes) || json.version !== 10) {
 					window.location.replace(`/editor/${projectId}`); return;
 				}
-				localStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(json));
+				const processed = postProcessProject(json, projectId);
+				localStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(processed));
 				sessionStorage.setItem(PENDING_IMPORT_KEY, "1");
 				window.location.replace(`/editor/${json.metadata.id}`);
 			} catch (_err) {
