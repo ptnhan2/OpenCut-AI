@@ -45,6 +45,7 @@ async function tryRestorePendingImport(editor: ReturnType<typeof useEditor>): Pr
 
 		const project = buildTProject(json);
 		await editor.storage.saveProject({ project });
+		console.log("[EditorProvider] Import saved successfully:", project.metadata.id, project.metadata.name);
 		return project.metadata.id;
 	} catch (err) {
 		console.error("[EditorProvider] Import restore failed:", err);
@@ -97,7 +98,8 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 					try {
 						const importedId = await tryRestorePendingImport(editor);
 						if (importedId) {
-							router.replace(`/editor/${importedId}`);
+							// Force full page reload to ensure IndexedDB is committed
+							window.location.replace(`/editor/${importedId}`);
 							return;
 						}
 
