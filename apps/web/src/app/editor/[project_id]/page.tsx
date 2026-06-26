@@ -26,16 +26,6 @@ import { CommandPalette } from "@/components/editor/command-palette";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
 const PLATFORM = "http://localhost:3000";
-const PNG_PIXELS = [
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOQktIDAAC0AGOKMzq7AAAAAElFTkSuQmCC",
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMQU7QDAADGAHaIpFxXAAAAAElFTkSuQmCC",
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGPgN0kAAAD5AKSOJAluAAAAAElFTkSuQmCC",
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMINmkGAAHoAQsgrtGYAAAAAElFTkSuQmCC",
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGPQzfIHAAGuAOfPU6WmAAAAAElFTkSuQmCC",
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOo91cBAAJDAPP6uqxqAAAAAElFTkSuQmCC",
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOI0OcDAAF4AJbhFptlAAAAAElFTkSuQmCC",
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOYnGYJAALCATPZxX6YAAAAAElFTkSuQmCC",
-];
 
 function postProcessProject(json: Record<string, unknown>): Record<string, unknown> {
   const scenes = json.scenes as Array<Record<string, unknown>>;
@@ -52,11 +42,12 @@ function postProcessProject(json: Record<string, unknown>): Record<string, unkno
       if (tType === "video") {
         const imgElements = elements.map(el => {
           shotNum++;
-          const png = PNG_PIXELS[shotNum % PNG_PIXELS.length];
+          const sceneNum = ((shotNum - 1) % 8) + 1;
+          const pngUrl = `${PLATFORM}/assets/placeholders/scene_${String(sceneNum).padStart(2, "0")}.png`;
           return {
             id: el.id, name: `Shot ${shotNum}`, duration: el.duration, startTime: el.startTime,
             trimStart: 0, trimEnd: 0, sourceDuration: el.duration,
-            type: "image", sourceType: "library", sourceUrl: png,
+            type: "image", sourceType: "library", sourceUrl: pngUrl,
             transform: { scale: 1, position: { x: 0, y: 0 }, rotate: 0 },
             opacity: 1, blendMode: "normal", hidden: false, playbackRate: 1,
           };
