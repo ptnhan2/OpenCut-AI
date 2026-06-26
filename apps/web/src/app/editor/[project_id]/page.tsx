@@ -26,62 +26,33 @@ import { CommandPalette } from "@/components/editor/command-palette";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
 const PLATFORM = "http://localhost:3000";
-const COLORS = ["1a1a2e","16213e","0f3460","533483","2d6a4f","7f4f24","582f0e","936639"];
 
-function svgDataUrl(color, label) {
-  return "data:image/svg+xml," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><rect width="1920" height="1080" fill="#'+color+'"/><text x="960" y="540" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="60" fill="white" opacity="0.8">'+label+'</text></svg>'
-  );
-}
-
-function postProcessProject(json) {
-  var scenes = json.scenes;
-  var shotNum = 0;
+function postProcessProject(json: Record<string, unknown>): Record<string, unknown> {
+  var scenes = json.scenes as Array<Record<string, unknown>>;
   for (var si = 0; si < scenes.length; si++) {
-    var tracks = scenes[si].tracks;
-    var newTracks = [];
+    var tracks = (scenes[si] as any).tracks as Array<Record<string, unknown>>;
     for (var ti = 0; ti < tracks.length; ti++) {
       var t = tracks[ti];
-      var els = t.elements || [];
-      if (t.type === "video") {
-        var imgEls = [];
-        for (var ei = 0; ei < els.length; ei++) {
-          shotNum++;
-          var c = COLORS[shotNum % COLORS.length];
-          var label = "Shot " + shotNum;
-          imgEls.push({
-            id: els[ei].id, name: label, duration: els[ei].duration, startTime: els[ei].startTime,
-            trimStart: 0, trimEnd: 0, sourceDuration: els[ei].duration,
-            type: "image", sourceType: "library", sourceUrl: svgDataUrl(c, label),
-            transform: { scale: 1, position: { x: 0, y: 0 }, rotate: 0 },
-            opacity: 1, blendMode: "normal", hidden: false, playbackRate: 1,
-          });
+      if (t.type !== "audio") continue;
+      var els = (t as any).elements as Array<Record<string, unknown>>;
+      for (var ei = 0; ei < els.length; ei++) {
+        var mid = (els[ei] as any).mediaId || "";
+        if (mid.indexOf("media-tts-") === 0) {
+          (els[ei] as any).sourceType = "library";
+          (els[ei] as any).sourceUrl = PLATFORM + "/assets/audio/tts/" + mid.replace("media-tts-", "") + ".mp3";
+          delete (els[ei] as any).mediaId;
         }
-        newTracks.push({ id: t.id, name: "Main Track", type: "video", elements: imgEls, isMain: true, muted: false, hidden: false, volume: 1 });
-      } else if (t.type === "audio") {
-        for (var ai = 0; ai < els.length; ai++) {
-          var mid = els[ai].mediaId || "";
-          if (mid.indexOf("media-tts-") === 0) {
-            els[ai].sourceType = "library";
-            els[ai].sourceUrl = PLATFORM + "/assets/audio/tts/" + mid.replace("media-tts-", "") + ".mp3";
-            delete els[ai].mediaId;
-          }
-        }
-        newTracks.push(t);
-      } else {
-        newTracks.push(t);
       }
     }
-    scenes[si].tracks = newTracks;
   }
   return json;
 }
 
 export default function Editor() {
   var params = useParams();
-  var projectId = params.project_id;
+  var projectId = params.project_id as string;
   var searchParams = useSearchParams();
-  var importUrl = searchParams.get("import");
+  var importUrl = searchParams.get("import") as string | null;
   var _s = useState(false);
   var importing = _s[0];
   var setImporting = _s[1];
@@ -113,14 +84,14 @@ export default function Editor() {
 function EditorLayout() {
   usePasteMedia(); useTranscribePrompt();
   var _ps = usePanelStore(); var panels = _ps.panels; var setPanel = _ps.setPanel;
-  var ts = useTranscriptStore(function(s) { return s.segments; });
-  var isT = useTranscriptStore(function(s) { return s.isTranscribing; });
+  var ts = useTranscriptStore(function(s: any) { return s.segments; });
+  var isT = useTranscriptStore(function(s: any) { return s.isTranscribing; });
   var editor = useEditor();
-  var htc = editor.timeline.getTracks().some(function(t) { return t.elements.length > 0; });
-  var hm = editor.timeline.getTracks().some(function(t) { return (t.type === "video" || t.type === "audio"||t.type==="image") && t.elements.length > 0; });
+  var htc = editor.timeline.getTracks().some(function(t: any) { return t.elements.length > 0; });
+  var hm = editor.timeline.getTracks().some(function(t: any) { return (t.type === "video" || t.type === "audio"||t.type==="image") && t.elements.length > 0; });
   var ht = hm && (ts.length > 0 || isT);
   var rr = useRef(false);
-  useEffect(function() { if(rr.current)return;var s=useTranscriptStore.getState().segments;if(s.length>0)return;var tr=editor.timeline.getTracks();if(!tr.some(function(t){return (t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0;}))return;var tt=tr.find(function(t){return t.type==="text"&&t.elements.length>0;});if(!tt)return;var se=tt.elements.slice().sort(function(a,b){return a.startTime-b.startTime;});if(se.length===0)return;var sg=se.map(function(el,i){var te=el;var tx=te.content||te.name||"";var sw=tx.trim().split(/\s+/).filter(Boolean);var sd=(el.startTime+el.duration)-el.startTime;var wd=sw.length>0?sd/sw.length:sd;return{id:i,text:tx,start:el.startTime,end:el.startTime+el.duration,words:sw.map(function(w,wi){return{word:w,start:el.startTime+wi*wd,end:el.startTime+(wi+1)*wd,confidence:0.9};})};});if(sg.length>0){rr.current=true;useTranscriptStore.getState().setSegments(sg)}},[editor]);
-  useEffect(function(){return editor.timeline.subscribe(function(){var s=useTranscriptStore.getState().segments;if(s.length===0)return;if(!editor.timeline.getTracks().some(function(t){return (t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0;}))useTranscriptStore.getState().reset();});},[editor]);
-  return <ResizablePanelGroup direction="vertical" className="size-full gap-[0.18rem]" onLayout={function(s){setPanel("mainContent",s[0]||panels.mainContent);setPanel("timeline",s[1]||panels.timeline);}}><ResizablePanel defaultSize={panels.mainContent} minSize={30} maxSize={85} className="min-h-0"><ResizablePanelGroup direction="horizontal" className="size-full gap-[0.19rem] px-3" onLayout={function(s){setPanel("tools",s[0]||panels.tools);setPanel("preview",s[1]||panels.preview);setPanel("properties",s[2]||panels.properties);}}><ResizablePanel defaultSize={panels.tools} minSize={15} maxSize={40} className="min-w-0"><AssetsPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.preview} minSize={30} className="min-h-0 min-w-0 flex-1"><PreviewPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.properties} minSize={15} maxSize={40} className="min-w-0">{ht||htc?<RightPanel className="size-full" />:<EmptyEditorGuide />}</ResizablePanel></ResizablePanelGroup></ResizablePanel>{ht&&<div className="flex justify-center px-3 py-1"><QuickActionsBar /></div>}<ResizableHandle withHandle /><ResizablePanel defaultSize={panels.timeline} minSize={15} maxSize={70} className="min-h-0 px-3 pb-3"><Timeline /></ResizablePanel></ResizablePanelGroup>;
+  useEffect(function() { if(rr.current)return;var s=useTranscriptStore.getState().segments;if(s.length>0)return;var tr=editor.timeline.getTracks();if(!tr.some(function(t:any){return (t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0;}))return;var tt=tr.find(function(t:any){return t.type==="text"&&t.elements.length>0;});if(!tt)return;var se=tt.elements.slice().sort(function(a:any,b:any){return a.startTime-b.startTime;});if(se.length===0)return;var sg=se.map(function(el:any,i:number){var te=el as TextElement;var tx=te.content||te.name||"";var sw=tx.trim().split(/\s+/).filter(Boolean);var sd=(el.startTime+el.duration)-el.startTime;var wd=sw.length>0?sd/sw.length:sd;return{id:i,text:tx,start:el.startTime,end:el.startTime+el.duration,words:sw.map(function(w:string,wi:number){return{word:w,start:el.startTime+wi*wd,end:el.startTime+(wi+1)*wd,confidence:0.9};})};});if(sg.length>0){rr.current=true;useTranscriptStore.getState().setSegments(sg)}},[editor]);
+  useEffect(function(){return editor.timeline.subscribe(function(){var s=useTranscriptStore.getState().segments;if(s.length===0)return;if(!editor.timeline.getTracks().some(function(t:any){return (t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0;}))useTranscriptStore.getState().reset();});},[editor]);
+  return (<ResizablePanelGroup direction="vertical" className="size-full gap-[0.18rem]" onLayout={function(s:any){setPanel("mainContent",s[0]||panels.mainContent);setPanel("timeline",s[1]||panels.timeline);}}><ResizablePanel defaultSize={panels.mainContent} minSize={30} maxSize={85} className="min-h-0"><ResizablePanelGroup direction="horizontal" className="size-full gap-[0.19rem] px-3" onLayout={function(s:any){setPanel("tools",s[0]||panels.tools);setPanel("preview",s[1]||panels.preview);setPanel("properties",s[2]||panels.properties);}}><ResizablePanel defaultSize={panels.tools} minSize={15} maxSize={40} className="min-w-0"><AssetsPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.preview} minSize={30} className="min-h-0 min-w-0 flex-1"><PreviewPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.properties} minSize={15} maxSize={40} className="min-w-0">{ht||htc?<RightPanel className="size-full" />:<EmptyEditorGuide />}</ResizablePanel></ResizablePanelGroup></ResizablePanel>{ht&&<div className="flex justify-center px-3 py-1"><QuickActionsBar /></div>}<ResizableHandle withHandle /><ResizablePanel defaultSize={panels.timeline} minSize={15} maxSize={70} className="min-h-0 px-3 pb-3"><Timeline /></ResizablePanel></ResizablePanelGroup>);
 }
