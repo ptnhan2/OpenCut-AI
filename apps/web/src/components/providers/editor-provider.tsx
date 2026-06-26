@@ -8,7 +8,8 @@ import { useKeybindingsListener, useKeybindingDisabler } from "@/hooks/use-keybi
 import { useEditorActions } from "@/hooks/actions/use-editor-actions";
 import { prefetchFontAtlas } from "@/lib/fonts/google-fonts";
 
-const PENDING_IMPORT_KEY = "opencut:pending-import";
+var PENDING_IMPORT_KEY = "opencut:pending-import";
+var PENDING_MEDIA_KEY = "opencut:pending-media";
 
 function genPNGBlob(r, g, b) {
   var c = document.createElement('canvas'); c.width = 640; c.height = 360;
@@ -16,14 +17,15 @@ function genPNGBlob(r, g, b) {
   return new Promise(function(resolve) { c.toBlob(resolve, 'image/png'); });
 }
 
-async function processImport(json, editor) {
+async function importProjectFromStorage(json, editor) {
+  var projectId = json.metadata.id;
   var COLORS = [[26,26,46],[22,33,62],[15,52,96],[83,52,131],[45,106,79],[127,79,36],[88,47,14],[147,102,57]];
   var shotNum = 0;
-  var scenes = json.scenes || [];
-  var projectId = json.metadata.id;
+  var mediaEntries = [];
 
-  for (var si = 0; si < scenes.length; si++) {
-    var tracks = scenes[si].tracks || [];
+  // Phase 1: Save project with mediaIds (no actual media yet)
+  for (var si = 0; si < (json.scenes||[]).length; si++) {
+    var tracks = json.scenes[si].tracks || [];
     for (var ti = 0; ti < tracks.length; ti++) {
       var t = tracks[ti];
       if (t.type !== "video") continue;
@@ -32,40 +34,49 @@ async function processImport(json, editor) {
         shotNum++;
         var el = els[ei];
         var cIdx = (shotNum - 1) % COLORS.length;
-        var blob = await genPNGBlob(COLORS[cIdx][0], COLORS[cIdx][1], COLORS[cIdx][2]);
-        var file = new File([blob], 'shot' + shotNum + '.png', { type: 'image/png' });
-        var label = "Shot " + shotNum;
-        
-        try {
-          var mediaId = await editor.media.addMediaAsset({ 
-            projectId: projectId, 
-            asset: { name: label, type: "image", file: file, width: 640, height: 360, label: label }
-          });
-          el.mediaId = mediaId;
-          el.type = "image";
-          el.sourceType = "upload";
-          delete el.sourceUrl;
-          delete el.muted;
-        } catch(e) { console.error("addMediaAsset failed for shot", shotNum, e); }
+        var mediaId = "media-import-" + el.id;
+        el.mediaId = mediaId;
+        el.type = "image";
+        el.sourceType = "upload";
+        delete el.sourceUrl;
+        delete el.muted;
+        mediaEntries.push({ mediaId: mediaId, color: COLORS[cIdx], label: "Shot " + shotNum, elId: el.id });
       }
     }
   }
 
-  return json;
-}
-
-function saveProjectDirect(json) {
-  return new Promise(function(resolve, reject) {
+  // Save project
+  await new Promise(function(resolve, reject) {
     var dbr = indexedDB.open("video-editor-projects", 1);
     dbr.onupgradeneeded = function() {};
     dbr.onsuccess = function() {
       var db = dbr.result;
       var tx = db.transaction("projects", "readwrite");
       var store = tx.objectStore("projects");
-      store.put({ id: json.metadata.id, metadata: json.metadata, scenes: json.scenes, currentSceneId: json.currentSceneId, settings: json.settings, version: json.version, timelineViewState: json.timelineViewState }).onsuccess = function() { db.close(); resolve(); };
+      store.put({ id: projectId, metadata: json.metadata, scenes: json.scenes, currentSceneId: json.currentSceneId, settings: json.settings, version: json.version, timelineViewState: json.timelineViewState }).onsuccess = function() { db.close(); resolve(); };
     };
     dbr.onerror = function() { reject(dbr.error); };
   });
+
+  // Store media info for phase 2 (after loadProject)
+  sessionStorage.setItem(PENDING_MEDIA_KEY, JSON.stringify(mediaEntries));
+  return projectId;
+}
+
+async function importMediaAfterLoad(editor, projectId) {
+  var stored = sessionStorage.getItem(PENDING_MEDIA_KEY);
+  if (!stored) return;
+  sessionStorage.removeItem(PENDING_MEDIA_KEY);
+  
+  var mediaEntries = JSON.parse(stored);
+  for (var i = 0; i < mediaEntries.length; i++) {
+    var e = mediaEntries[i];
+    var blob = await genPNGBlob(e.color[0], e.color[1], e.color[2]);
+    var file = new File([blob], 'shot.png', { type: 'image/png' });
+    try {
+      await editor.media.addMediaAsset({ projectId: projectId, asset: { name: e.label, type: "image", file: file, width: 640, height: 360, label: e.label } });
+    } catch(_) {}
+  }
 }
 
 interface EditorProviderProps { projectId: string; children: React.ReactNode; }
@@ -99,8 +110,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
           if (stored) {
             var json = JSON.parse(stored);
             if (json.metadata && json.metadata.id && json.version === 10) {
-              await processImport(json, editor);
-              await saveProjectDirect(json);
+              await importProjectFromStorage(json, editor);
               localStorage.removeItem(PENDING_IMPORT_KEY);
               sessionStorage.removeItem(PENDING_IMPORT_KEY);
               window.location.replace("/editor/" + json.metadata.id);
@@ -114,6 +124,14 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
     })();
     return function() { cancelled = true; };
   }, [projectId, editor, router]);
+
+  // Phase 2: After project loads, import media assets
+  useEffect(function() {
+    if (isLoading || error) return;
+    var stored = sessionStorage.getItem(PENDING_MEDIA_KEY);
+    if (!stored) return;
+    importMediaAfterLoad(editor, projectId);
+  }, [isLoading, error, projectId, editor]);
 
   if (error) return <div className="bg-background flex h-screen w-screen items-center justify-center"><div className="flex flex-col items-center gap-4"><p className="text-destructive text-sm">{error}</p></div></div>;
   if (isLoading) return <div className="bg-background flex h-screen w-screen items-center justify-center"><div className="flex flex-col items-center gap-4"><Loader2 className="text-muted-foreground size-8 animate-spin" /><p className="text-muted-foreground text-sm">Loading project...</p></div></div>;
