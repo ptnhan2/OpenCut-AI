@@ -10,30 +10,26 @@ import {
 } from "@/hooks/use-keybindings";
 import { useEditorActions } from "@/hooks/actions/use-editor-actions";
 import { prefetchFontAtlas } from "@/lib/fonts/google-fonts";
-import type { TProject } from "@/types/project";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
 
-function buildTProject(json: Record<string, unknown>): TProject {
-	return {
-		version: json.version as number,
-		metadata: {
-			...json.metadata as Record<string, unknown>,
-			createdAt: new Date((json.metadata as Record<string, string>).createdAt),
-			updatedAt: new Date((json.metadata as Record<string, string>).updatedAt),
-		},
-		scenes: (json.scenes as Array<Record<string, unknown>>).map((scene) => ({
-			...scene,
-			createdAt: new Date(scene.createdAt as string),
-			updatedAt: new Date(scene.updatedAt as string),
-		})),
-		currentSceneId: json.currentSceneId as string,
-		settings: json.settings,
-		timelineViewState: json.timelineViewState,
-	} as TProject;
+function saveProjectDirect(json: Record<string, unknown>): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const req = indexedDB.open("video-editor-projects", 1);
+		req.onsuccess = () => {
+			const db = req.result;
+			const tx = db.transaction("projects", "readwrite");
+			const store = tx.objectStore("projects");
+			const id = json.metadata?.id as string;
+			const putReq = store.put({ id, ...json });
+			putReq.onsuccess = () => { db.close(); resolve(); };
+			putReq.onerror = () => { db.close(); reject(putReq.error); };
+			tx.oncomplete = () => {};
+		};
+		req.onerror = () => reject(req.error);
+		req.onupgradeneeded = () => {};
+	});
 }
-
-function delay(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 interface EditorProviderProps { projectId: string; children: React.ReactNode; }
 
@@ -69,16 +65,10 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 					if (stored) {
 						const json = JSON.parse(stored);
 						if (json.metadata?.id && json.version === 10) {
-							const project = buildTProject(json);
-							await editor.storage.saveProject({ project });
-							await delay(300);
-							await editor.project.loadProject({ id: project.metadata.id });
+							await saveProjectDirect(json);
 							localStorage.removeItem(PENDING_IMPORT_KEY);
 							sessionStorage.removeItem(PENDING_IMPORT_KEY);
-							if (cancelled) return;
-							setIsLoading(false);
-							prefetchFontAtlas();
-							if (project.metadata.id !== projectId) router.replace(`/editor/${project.metadata.id}`);
+							window.location.replace(`/editor/${json.metadata.id}`);
 							return;
 						}
 					}
