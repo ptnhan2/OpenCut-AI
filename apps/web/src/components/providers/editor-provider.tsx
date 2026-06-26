@@ -9,20 +9,18 @@ import { useEditorActions } from "@/hooks/actions/use-editor-actions";
 import { prefetchFontAtlas } from "@/lib/fonts/google-fonts";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
-var COLORS = [[26,26,46],[22,33,62],[15,52,96],[83,52,131],[45,106,79],[127,79,36],[88,47,14],[147,102,57]];
 
-function genPNG(r, g, b) {
+function genPNGBlob(r, g, b) {
   var c = document.createElement('canvas'); c.width = 640; c.height = 360;
   var ctx = c.getContext('2d'); ctx.fillStyle = 'rgb('+r+','+g+','+b+')'; ctx.fillRect(0,0,640,360);
-  return c.toDataURL('image/png');
+  return new Promise(function(resolve) { c.toBlob(resolve, 'image/png'); });
 }
 
-async function processImport(json) {
-  var projectId = json.metadata.id;
-  var mediaDBName = 'video-editor-media-' + projectId;
-  var entries = [];
+async function processImport(json, editor) {
+  var COLORS = [[26,26,46],[22,33,62],[15,52,96],[83,52,131],[45,106,79],[127,79,36],[88,47,14],[147,102,57]];
   var shotNum = 0;
   var scenes = json.scenes || [];
+  var projectId = json.metadata.id;
 
   for (var si = 0; si < scenes.length; si++) {
     var tracks = scenes[si].tracks || [];
@@ -34,56 +32,40 @@ async function processImport(json) {
         shotNum++;
         var el = els[ei];
         var cIdx = (shotNum - 1) % COLORS.length;
-        var dataUrl = genPNG(COLORS[cIdx][0], COLORS[cIdx][1], COLORS[cIdx][2]);
-        var mediaId = "media-import-" + el.id;
-        el.mediaId = mediaId;
-        el.type = "image";
-        el.sourceType = "upload";
-        delete el.sourceUrl;
-        delete el.muted;
+        var blob = await genPNGBlob(COLORS[cIdx][0], COLORS[cIdx][1], COLORS[cIdx][2]);
+        var file = new File([blob], 'shot' + shotNum + '.png', { type: 'image/png' });
         var label = "Shot " + shotNum;
-        entries.push({ id: mediaId, name: label, type: "image", dataUrl: dataUrl, w: 640, h: 360 });
+        
+        try {
+          var mediaId = await editor.media.addMediaAsset({ 
+            projectId: projectId, 
+            asset: { name: label, type: "image", file: file, width: 640, height: 360, label: label }
+          });
+          el.mediaId = mediaId;
+          el.type = "image";
+          el.sourceType = "upload";
+          delete el.sourceUrl;
+          delete el.muted;
+        } catch(e) { console.error("addMediaAsset failed for shot", shotNum, e); }
       }
     }
   }
 
-  // Save media entries to IndexedDB
-  if (entries.length > 0) {
-    await new Promise(function(resolve, reject) {
-      var dbr = indexedDB.open(mediaDBName, 1);
-      dbr.onupgradeneeded = function() { dbr.result.createObjectStore('media-metadata', { keyPath: 'id' }); };
-      dbr.onsuccess = function() {
-        var db = dbr.result;
-        var tx = db.transaction('media-metadata', 'readwrite');
-        var store = tx.objectStore('media-metadata');
-        var done = 0;
-        for (var i = 0; i < entries.length; i++) {
-          var e = entries[i];
-          store.put({ id: e.id, name: e.name, type: e.type, size: e.dataUrl.length, lastModified: Date.now(), width: e.w, height: e.h, thumbnailUrl: e.dataUrl }).onsuccess = function() {
-            done++;
-            if (done >= entries.length) { db.close(); resolve(); }
-          };
-        }
-        if (entries.length === 0) resolve();
-      };
-      dbr.onerror = function() { reject(dbr.error); };
-    });
-  }
+  return json;
+}
 
-  // Save project
-  await new Promise(function(resolve, reject) {
+function saveProjectDirect(json) {
+  return new Promise(function(resolve, reject) {
     var dbr = indexedDB.open("video-editor-projects", 1);
     dbr.onupgradeneeded = function() {};
     dbr.onsuccess = function() {
       var db = dbr.result;
       var tx = db.transaction("projects", "readwrite");
       var store = tx.objectStore("projects");
-      store.put({ id: projectId, metadata: json.metadata, scenes: json.scenes, currentSceneId: json.currentSceneId, settings: json.settings, version: json.version, timelineViewState: json.timelineViewState }).onsuccess = function() { db.close(); resolve(); };
+      store.put({ id: json.metadata.id, metadata: json.metadata, scenes: json.scenes, currentSceneId: json.currentSceneId, settings: json.settings, version: json.version, timelineViewState: json.timelineViewState }).onsuccess = function() { db.close(); resolve(); };
     };
     dbr.onerror = function() { reject(dbr.error); };
   });
-
-  return projectId;
 }
 
 interface EditorProviderProps { projectId: string; children: React.ReactNode; }
@@ -117,7 +99,8 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
           if (stored) {
             var json = JSON.parse(stored);
             if (json.metadata && json.metadata.id && json.version === 10) {
-              await processImport(json);
+              await processImport(json, editor);
+              await saveProjectDirect(json);
               localStorage.removeItem(PENDING_IMPORT_KEY);
               sessionStorage.removeItem(PENDING_IMPORT_KEY);
               window.location.replace("/editor/" + json.metadata.id);
