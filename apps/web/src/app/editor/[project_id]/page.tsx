@@ -27,35 +27,31 @@ import { BackgroundTasksWidget } from "@/components/editor/background-tasks";
 import { CommandPalette } from "@/components/editor/command-palette";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
-const PLATFORM = "http://localhost:3000";
+
+function dummyImageDataUrl(r: number, g: number, b: number): string {
+	const w=1920,h=1080;
+	const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="100%" height="100%" fill="rgb(${r},${g},${b})"/></svg>`;
+	return "data:image/svg+xml,"+encodeURIComponent(svg);
+}
 
 function postProcessProject(json: Record<string, unknown>): Record<string, unknown> {
 	const scenes = json.scenes as Array<Record<string, unknown>>;
-	let shotIdx = 0;
+	const colors = [[26,26,46],[22,33,62],[15,52,96],[83,52,131],[45,106,79],[127,79,36],[88,47,14],[147,102,57]];
+	let idx = 0;
 
 	for (const scene of scenes) {
 		const tracks = scene.tracks as Array<Record<string, unknown>>;
 		for (const track of tracks) {
 			const elements = track.elements as Array<Record<string, unknown>>;
 			for (const el of elements) {
-				const elType = el.type as string;
-
-				if (elType === "video") {
-					const sceneNum = (shotIdx % 8) + 1;
+				if (el.type === "video") {
+					const [r,g,b] = colors[idx % colors.length];
 					el.type = "image";
 					el.sourceType = "library";
-					el.sourceUrl = `${PLATFORM}/assets/placeholders/scene_${String(sceneNum).padStart(2, "0")}.png`;
+					el.sourceUrl = dummyImageDataUrl(r,g,b);
 					delete el.mediaId;
-					delete (el as Record<string, unknown>).muted;
-					shotIdx++;
-				} else if (elType === "audio") {
-					const mediaId = el.mediaId as string;
-					if (mediaId?.startsWith("media-tts-")) {
-						const audioId = mediaId.replace("media-tts-", "");
-						el.sourceType = "library";
-						el.sourceUrl = `${PLATFORM}/assets/audio/tts/aud_sb${audioId}.mp3`;
-						delete el.mediaId;
-					}
+					delete (el as any).muted;
+					idx++;
 				}
 			}
 		}
@@ -90,9 +86,7 @@ export default function Editor() {
 		f();
 	}, [importUrl, projectId]);
 
-	if (importing) {
-		return <div className="flex h-screen items-center justify-center bg-background"><div className="text-center space-y-4"><div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" /><p className="text-sm text-muted-foreground">Importing project...</p></div></div>;
-	}
+	if (importing) return <div className="flex h-screen items-center justify-center bg-background"><div className="text-center space-y-4"><div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" /><p className="text-sm text-muted-foreground">Importing project...</p></div></div>;
 
 	return (<MobileGate><EditorProvider projectId={projectId}><div className="bg-background flex h-screen w-screen flex-col overflow-hidden"><EditorHeader /><div className="min-h-0 min-w-0 flex-1"><EditorLayout /></div><AIPanelWrapper /><Onboarding /><MigrationDialog /><BackgroundTasksWidget /><CommandPalette /></div></EditorProvider></MobileGate>);
 }
