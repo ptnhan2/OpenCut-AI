@@ -33,26 +33,6 @@ function buildTProject(json: Record<string, unknown>): TProject {
 	} as TProject;
 }
 
-async function tryRestorePendingImport(editor: ReturnType<typeof useEditor>): Promise<string | null> {
-	const stored = sessionStorage.getItem(PENDING_IMPORT_KEY);
-	if (!stored) return null;
-
-	sessionStorage.removeItem(PENDING_IMPORT_KEY);
-
-	try {
-		const json = JSON.parse(stored);
-		if (!json.metadata?.id || json.version !== 10) return null;
-
-		const project = buildTProject(json);
-		await editor.storage.saveProject({ project });
-		console.log("[EditorProvider] Import saved successfully:", project.metadata.id, project.metadata.name);
-		return project.metadata.id;
-	} catch (err) {
-		console.error("[EditorProvider] Import restore failed:", err);
-		return null;
-	}
-}
-
 interface EditorProviderProps {
 	projectId: string;
 	children: React.ReactNode;
@@ -81,9 +61,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 			try {
 				setIsLoading(true);
 				await editor.project.loadProject({ id: projectId });
-
 				if (cancelled) return;
-
 				setIsLoading(false);
 				prefetchFontAtlas();
 			} catch (err) {
@@ -94,37 +72,42 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 					(err.message.includes("not found") ||
 						err.message.includes("does not exist"));
 
-				if (isNotFound) {
-					try {
-						const importedId = await tryRestorePendingImport(editor);
-						if (importedId) {
-							// Force full page reload to ensure IndexedDB is committed
-							window.location.replace(`/editor/${importedId}`);
+				if (!isNotFound) {
+					setError(err instanceof Error ? err.message : "Failed to load project");
+					setIsLoading(false);
+					return;
+				}
+
+				try {
+					const stored = sessionStorage.getItem(PENDING_IMPORT_KEY);
+					if (stored) {
+						sessionStorage.removeItem(PENDING_IMPORT_KEY);
+						const json = JSON.parse(stored);
+						if (json.metadata?.id && json.version === 10) {
+							const project = buildTProject(json);
+							await editor.storage.saveProject({ project });
+							await editor.project.loadProject({ id: project.metadata.id });
+							if (cancelled) return;
+							setIsLoading(false);
+							prefetchFontAtlas();
+							if (project.metadata.id !== projectId) {
+								router.replace(`/editor/${project.metadata.id}`);
+							}
 							return;
 						}
-
-						const newProjectId = await editor.project.createNewProject({
-							name: "Untitled Project",
-						});
-						router.replace(`/editor/${newProjectId}`);
-					} catch (_createErr) {
-						setError("Failed to create project");
-						setIsLoading(false);
 					}
-				} else {
-					setError(
-						err instanceof Error ? err.message : "Failed to load project",
-					);
+
+					const newProjectId = await editor.project.createNewProject({ name: "Untitled Project" });
+					router.replace(`/editor/${newProjectId}`);
+				} catch (_createErr) {
+					setError("Failed to create project");
 					setIsLoading(false);
 				}
 			}
 		};
 
 		loadProject();
-
-		return () => {
-			cancelled = true;
-		};
+		return () => { cancelled = true; };
 	}, [projectId, editor, router]);
 
 	if (error) {
@@ -169,18 +152,15 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 function EditorRuntimeBindings() {
 	const editor = useEditor();
-
 	useEffect(() => {
 		const handleBeforeUnload = (event: BeforeUnloadEvent) => {
 			if (!editor.save.getIsDirty()) return;
 			event.preventDefault();
 			(event as unknown as { returnValue: string }).returnValue = "";
 		};
-
 		window.addEventListener("beforeunload", handleBeforeUnload);
 		return () => window.removeEventListener("beforeunload", handleBeforeUnload);
 	}, [editor]);
-
 	useEditorActions();
 	useKeybindingsListener();
 	return null;
