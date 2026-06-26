@@ -192,7 +192,7 @@ export class PlaybackManager {
 		const delta = (now - this.lastUpdate) / 1000;
 		this.lastUpdate = now;
 
-		const speed = this.shuttleDirection === "reverse" ? -this.shuttleSpeed : this.shuttleSpeed;
+		const speed = this.shuttleDirection === null ? 1 : this.shuttleDirection === "reverse" ? -this.shuttleSpeed : this.shuttleSpeed;
 		const newTime = this.currentTime + delta * speed;
 		const duration = this.editor.timeline.getTotalDuration();
 

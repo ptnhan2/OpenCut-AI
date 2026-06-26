@@ -103,9 +103,10 @@ async function importMediaPhase2(editor, projectId) {
     idMap[e.mediaId] = newId;
   }
 
-  // Step 2: cập nhật mediaId + chuẩn hóa startTime trong TẤT CẢ scenes
-  // Pipeline dùng absolute timestamps; OpenCut-AI cần mỗi scene bắt đầu từ 0
+  // Step 2: cập nhật mediaId + chuẩn hóa startTime + fix fontSize + fix audio trong TẤT CẢ scenes
   var scenes = editor.scenes.getScenes();
+  var canvasHeight = editor.project.getActiveOrNull()?.settings?.canvasSize?.height || 1080;
+  var platformOrigin = window.location.origin.replace('3001', '3000');
   var updatedScenes = [];
   for (var si = 0; si < scenes.length; si++) {
     var scene = scenes[si];
@@ -127,9 +128,24 @@ async function importMediaPhase2(editor, projectId) {
       for (var ei = 0; ei < (track.elements || []).length; ei++) {
         var el = track.elements[ei];
         var patch = { startTime: el.startTime - minStart };
+
+        // Map video/image mediaId → UUID mới
         if (el.mediaId && idMap[el.mediaId]) {
           patch.mediaId = idMap[el.mediaId];
         }
+
+        // Fix fontSize: pipeline dùng pixel trực tiếp, OpenCut-AI scale theo canvasHeight/90
+        if (el.type === "text" && el.fontSize) {
+          patch.fontSize = el.fontSize * 90 / canvasHeight;
+        }
+
+        // Fix audio: convert upload+mediaId → library+sourceUrl (TTS files từ Platform)
+        if (el.type === "audio" && el.sourceType === "upload" && el.mediaId && el.mediaId.indexOf("media-tts-") === 0) {
+          var audioId = el.mediaId.replace("media-tts-", "");
+          patch.sourceType = "library";
+          patch.sourceUrl = platformOrigin + "/assets/audio/tts/" + audioId + ".mp3";
+        }
+
         newEls.push(Object.assign({}, el, patch));
       }
       newTracks.push(Object.assign({}, track, { elements: newEls }));
