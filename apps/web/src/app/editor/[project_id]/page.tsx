@@ -26,79 +26,82 @@ import { CommandPalette } from "@/components/editor/command-palette";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
 const PLATFORM = "http://localhost:3000";
+const COLORS = ["1a1a2e","16213e","0f3460","533483","2d6a4f","7f4f24","582f0e","936639"];
 
-function postProcessProject(json: Record<string, unknown>): Record<string, unknown> {
-  const scenes = json.scenes as Array<Record<string, unknown>>;
-  let shotNum = 0;
+function svgDataUrl(color, label) {
+  return "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><rect width="1920" height="1080" fill="#'+color+'"/><text x="960" y="540" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="60" fill="white" opacity="0.8">'+label+'</text></svg>'
+  );
+}
 
-  for (const scene of scenes) {
-    const tracks = scene.tracks as Array<Record<string, unknown>>;
-    const newTracks: Array<Record<string, unknown>> = [];
-
-    for (const track of tracks) {
-      const tType = track.type as string;
-      const elements = (track.elements || []) as Array<Record<string, unknown>>;
-
-      if (tType === "video") {
-        const imgElements = elements.map(el => {
+function postProcessProject(json) {
+  var scenes = json.scenes;
+  var shotNum = 0;
+  for (var si = 0; si < scenes.length; si++) {
+    var tracks = scenes[si].tracks;
+    var newTracks = [];
+    for (var ti = 0; ti < tracks.length; ti++) {
+      var t = tracks[ti];
+      var els = t.elements || [];
+      if (t.type === "video") {
+        var imgEls = [];
+        for (var ei = 0; ei < els.length; ei++) {
           shotNum++;
-          const sceneNum = ((shotNum - 1) % 8) + 1;
-          const pngUrl = `${PLATFORM}/assets/placeholders/scene_${String(sceneNum).padStart(2, "0")}.png`;
-          return {
-            id: el.id, name: `Shot ${shotNum}`, duration: el.duration, startTime: el.startTime,
-            trimStart: 0, trimEnd: 0, sourceDuration: el.duration,
-            type: "image", sourceType: "library", sourceUrl: pngUrl,
+          var c = COLORS[shotNum % COLORS.length];
+          var label = "Shot " + shotNum;
+          imgEls.push({
+            id: els[ei].id, name: label, duration: els[ei].duration, startTime: els[ei].startTime,
+            trimStart: 0, trimEnd: 0, sourceDuration: els[ei].duration,
+            type: "image", sourceType: "library", sourceUrl: svgDataUrl(c, label),
             transform: { scale: 1, position: { x: 0, y: 0 }, rotate: 0 },
             opacity: 1, blendMode: "normal", hidden: false, playbackRate: 1,
-          };
-        });
-        newTracks.push({
-          id: track.id, name: "Main Track", type: "video",
-          elements: imgElements, isMain: true,
-          muted: false, hidden: false, volume: 1,
-        });
-      } else if (tType === "audio") {
-        for (const el of elements) {
-          const mid = (el.mediaId as string) || "";
-          if (mid.startsWith("media-tts-")) {
-            (el as any).sourceType = "library";
-            (el as any).sourceUrl = `${PLATFORM}/assets/audio/tts/${mid.replace("media-tts-", "")}.mp3`;
-            delete (el as any).mediaId;
+          });
+        }
+        newTracks.push({ id: t.id, name: "Main Track", type: "video", elements: imgEls, isMain: true, muted: false, hidden: false, volume: 1 });
+      } else if (t.type === "audio") {
+        for (var ai = 0; ai < els.length; ai++) {
+          var mid = els[ai].mediaId || "";
+          if (mid.indexOf("media-tts-") === 0) {
+            els[ai].sourceType = "library";
+            els[ai].sourceUrl = PLATFORM + "/assets/audio/tts/" + mid.replace("media-tts-", "") + ".mp3";
+            delete els[ai].mediaId;
           }
         }
-        newTracks.push(track);
+        newTracks.push(t);
       } else {
-        newTracks.push(track);
+        newTracks.push(t);
       }
     }
-    (scene as any).tracks = newTracks;
+    scenes[si].tracks = newTracks;
   }
   return json;
 }
 
 export default function Editor() {
-  const params = useParams();
-  const projectId = params.project_id as string;
-  const searchParams = useSearchParams();
-  const importUrl = searchParams.get("import");
-  const [importing, setImporting] = useState(false);
+  var params = useParams();
+  var projectId = params.project_id;
+  var searchParams = useSearchParams();
+  var importUrl = searchParams.get("import");
+  var _s = useState(false);
+  var importing = _s[0];
+  var setImporting = _s[1];
 
-  useEffect(() => {
+  useEffect(function() {
     if (!importUrl) return;
-    (async () => {
+    (async function() {
       setImporting(true);
       try {
-        const res = await fetch(importUrl);
-        if (!res.ok) { window.location.replace(`/editor/${projectId}`); return; }
-        const json = await res.json();
-        if (!json.metadata?.id || !Array.isArray(json.scenes) || json.version !== 10) {
-          window.location.replace(`/editor/${projectId}`); return;
+        var res = await fetch(importUrl);
+        if (!res.ok) { window.location.replace("/editor/" + projectId); return; }
+        var json = await res.json();
+        if (!json.metadata || !json.metadata.id || !Array.isArray(json.scenes) || json.version !== 10) {
+          window.location.replace("/editor/" + projectId); return;
         }
-        const processed = postProcessProject(json);
+        var processed = postProcessProject(json);
         localStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(processed));
         sessionStorage.setItem(PENDING_IMPORT_KEY, "1");
-        window.location.replace(`/editor/${json.metadata.id}`);
-      } catch { window.location.replace(`/editor/${projectId}`); }
+        window.location.replace("/editor/" + json.metadata.id);
+      } catch (_e) { window.location.replace("/editor/" + projectId); }
     })();
   }, [importUrl, projectId]);
 
@@ -109,15 +112,15 @@ export default function Editor() {
 
 function EditorLayout() {
   usePasteMedia(); useTranscribePrompt();
-  const { panels, setPanel } = usePanelStore();
-  const ts = useTranscriptStore((s) => s.segments);
-  const isT = useTranscriptStore((s) => s.isTranscribing);
-  const editor = useEditor();
-  const htc = editor.timeline.getTracks().some(t => t.elements.length > 0);
-  const hm = editor.timeline.getTracks().some(t => (t.type === "video" || t.type === "audio"||t.type==="image") && t.elements.length > 0);
-  const ht = hm && (ts.length > 0 || isT);
-  const rr = useRef(false);
-  useEffect(() => { if(rr.current)return;const s=useTranscriptStore.getState().segments;if(s.length>0)return;const tr=editor.timeline.getTracks();if(!tr.some(t=>(t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0))return;const tt=tr.find(t=>t.type==="text"&&t.elements.length>0);if(!tt)return;const se=[...tt.elements].sort((a,b)=>a.startTime-b.startTime);if(se.length===0)return;const sg=se.map((el,i)=>{const te=el as TextElement;const tx=te.content||te.name||"";const sw=tx.trim().split(/\s+/).filter(Boolean);const sd=(el.startTime+el.duration)-el.startTime;const wd=sw.length>0?sd/sw.length:sd;return{id:i,text:tx,start:el.startTime,end:el.startTime+el.duration,words:sw.map((w,wi)=>({word:w,start:el.startTime+wi*wd,end:el.startTime+(wi+1)*wd,confidence:0.9}))}});if(sg.length>0){rr.current=true;useTranscriptStore.getState().setSegments(sg)}},[editor]);
-  useEffect(()=>{return editor.timeline.subscribe(()=>{const{s}=useTranscriptStore.getState();if(s.length===0)return;if(!editor.timeline.getTracks().some(t=>(t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0))useTranscriptStore.getState().reset()})},[editor]);
-  return (<ResizablePanelGroup direction="vertical" className="size-full gap-[0.18rem]" onLayout={s=>{setPanel("mainContent",s[0]??panels.mainContent);setPanel("timeline",s[1]??panels.timeline)}}><ResizablePanel defaultSize={panels.mainContent} minSize={30} maxSize={85} className="min-h-0"><ResizablePanelGroup direction="horizontal" className="size-full gap-[0.19rem] px-3" onLayout={s=>{setPanel("tools",s[0]??panels.tools);setPanel("preview",s[1]??panels.preview);setPanel("properties",s[2]??panels.properties)}}><ResizablePanel defaultSize={panels.tools} minSize={15} maxSize={40} className="min-w-0"><AssetsPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.preview} minSize={30} className="min-h-0 min-w-0 flex-1"><PreviewPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.properties} minSize={15} maxSize={40} className="min-w-0">{ht||htc?<RightPanel className="size-full" />:<EmptyEditorGuide />}</ResizablePanel></ResizablePanelGroup></ResizablePanel>{ht&&<div className="flex justify-center px-3 py-1"><QuickActionsBar /></div>}<ResizableHandle withHandle /><ResizablePanel defaultSize={panels.timeline} minSize={15} maxSize={70} className="min-h-0 px-3 pb-3"><Timeline /></ResizablePanel></ResizablePanelGroup>);
+  var _ps = usePanelStore(); var panels = _ps.panels; var setPanel = _ps.setPanel;
+  var ts = useTranscriptStore(function(s) { return s.segments; });
+  var isT = useTranscriptStore(function(s) { return s.isTranscribing; });
+  var editor = useEditor();
+  var htc = editor.timeline.getTracks().some(function(t) { return t.elements.length > 0; });
+  var hm = editor.timeline.getTracks().some(function(t) { return (t.type === "video" || t.type === "audio"||t.type==="image") && t.elements.length > 0; });
+  var ht = hm && (ts.length > 0 || isT);
+  var rr = useRef(false);
+  useEffect(function() { if(rr.current)return;var s=useTranscriptStore.getState().segments;if(s.length>0)return;var tr=editor.timeline.getTracks();if(!tr.some(function(t){return (t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0;}))return;var tt=tr.find(function(t){return t.type==="text"&&t.elements.length>0;});if(!tt)return;var se=tt.elements.slice().sort(function(a,b){return a.startTime-b.startTime;});if(se.length===0)return;var sg=se.map(function(el,i){var te=el;var tx=te.content||te.name||"";var sw=tx.trim().split(/\s+/).filter(Boolean);var sd=(el.startTime+el.duration)-el.startTime;var wd=sw.length>0?sd/sw.length:sd;return{id:i,text:tx,start:el.startTime,end:el.startTime+el.duration,words:sw.map(function(w,wi){return{word:w,start:el.startTime+wi*wd,end:el.startTime+(wi+1)*wd,confidence:0.9};})};});if(sg.length>0){rr.current=true;useTranscriptStore.getState().setSegments(sg)}},[editor]);
+  useEffect(function(){return editor.timeline.subscribe(function(){var s=useTranscriptStore.getState().segments;if(s.length===0)return;if(!editor.timeline.getTracks().some(function(t){return (t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0;}))useTranscriptStore.getState().reset();});},[editor]);
+  return <ResizablePanelGroup direction="vertical" className="size-full gap-[0.18rem]" onLayout={function(s){setPanel("mainContent",s[0]||panels.mainContent);setPanel("timeline",s[1]||panels.timeline);}}><ResizablePanel defaultSize={panels.mainContent} minSize={30} maxSize={85} className="min-h-0"><ResizablePanelGroup direction="horizontal" className="size-full gap-[0.19rem] px-3" onLayout={function(s){setPanel("tools",s[0]||panels.tools);setPanel("preview",s[1]||panels.preview);setPanel("properties",s[2]||panels.properties);}}><ResizablePanel defaultSize={panels.tools} minSize={15} maxSize={40} className="min-w-0"><AssetsPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.preview} minSize={30} className="min-h-0 min-w-0 flex-1"><PreviewPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.properties} minSize={15} maxSize={40} className="min-w-0">{ht||htc?<RightPanel className="size-full" />:<EmptyEditorGuide />}</ResizablePanel></ResizablePanelGroup></ResizablePanel>{ht&&<div className="flex justify-center px-3 py-1"><QuickActionsBar /></div>}<ResizableHandle withHandle /><ResizablePanel defaultSize={panels.timeline} minSize={15} maxSize={70} className="min-h-0 px-3 pb-3"><Timeline /></ResizablePanel></ResizablePanelGroup>;
 }
