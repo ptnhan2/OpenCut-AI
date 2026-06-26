@@ -27,101 +27,121 @@ import { BackgroundTasksWidget } from "@/components/editor/background-tasks";
 import { CommandPalette } from "@/components/editor/command-palette";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
+const PLATFORM = "http://localhost:3000";
 
-function dummyImageDataUrl(r: number, g: number, b: number, label: string): string {
-	const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><rect width="100%" height="100%" fill="rgb(${r},${g},${b})"/><text x="960" y="540" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="60" fill="white" opacity="0.7">${label}</text></svg>`;
+function imgDataUrl(r, g, b, label) {
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><rect width="100%" height="100%" fill="rgb('+r+','+g+','+b+')"/><text x="960" y="540" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="60" fill="white" opacity="0.7">'+label+'</text></svg>';
 	return "data:image/svg+xml," + encodeURIComponent(svg);
 }
 
-function toImageElement(el: Record<string, unknown>, color: number[], label: string): Record<string, unknown> {
+function cleanImageEl(el, color, label) {
 	return {
 		id: el.id, name: label, duration: el.duration, startTime: el.startTime,
 		trimStart: 0, trimEnd: 0, sourceDuration: el.duration,
-		type: "image", sourceType: "library", sourceUrl: dummyImageDataUrl(color[0], color[1], color[2], label),
+		type: "image", sourceType: "library",
+		sourceUrl: imgDataUrl(color[0], color[1], color[2], label),
 		transform: { scale: 1, position: { x: 0, y: 0 }, rotate: 0 },
 		opacity: 1, blendMode: "normal", hidden: false, playbackRate: 1,
 	};
 }
 
-function postProcessProject(json: Record<string, unknown>): Record<string, unknown> {
-	const scenes = json.scenes as Array<Record<string, unknown>>;
-	const palette = [[26,26,46],[22,33,62],[15,52,96],[83,52,131],[45,106,79],[127,79,36],[88,47,14],[147,102,57]];
-	let shotNum = 0;
+function fixAudioEl(el) {
+	var mid = el.mediaId || '';
+	if (mid.startsWith('media-tts-')) {
+		el.sourceType = "library";
+		el.sourceUrl = PLATFORM + '/assets/audio/tts/' + mid.replace('media-tts-', '') + '.mp3';
+		delete el.mediaId;
+	}
+	return el;
+}
 
-	for (const scene of scenes) {
-		const tracks = scene.tracks as Array<Record<string, unknown>>;
-		const newTracks: Array<Record<string, unknown>> = [];
+function postProcess(json) {
+	var scenes = json.scenes;
+	var colors = [[26,26,46],[22,33,62],[15,52,96],[83,52,131],[45,106,79],[127,79,36],[88,47,14],[147,102,57]];
+	var shotNum = 0;
 
-		for (const track of tracks) {
-			const tType = track.type as string;
-			const elements = track.elements as Array<Record<string, unknown>>;
-
-			if (tType === "video") {
-				// Convert video track to image track with placeholder images
-				const imgElements = elements.map(el => {
+	for (var si = 0; si < scenes.length; si++) {
+		var tracks = scenes[si].tracks;
+		var newTracks = [];
+		for (var ti = 0; ti < tracks.length; ti++) {
+			var t = tracks[ti];
+			var els = t.elements || [];
+			if (t.type === "video" && t.isMain) {
+				var imgEls = [];
+				for (var ei = 0; ei < els.length; ei++) {
 					shotNum++;
-					const color = palette[shotNum % palette.length];
-					const label = `Shot ${shotNum}: ${(el.name as string || '').replace('Shot ', '')}`;
-					return toImageElement(el, color, label);
-				});
-				newTracks.push({
-					id: track.id, name: "Main Track", type: "video",
-					elements: imgElements, isMain: true,
-					muted: false, hidden: false, volume: 1,
-				});
+					var c = colors[shotNum % colors.length];
+					var label = 'Shot ' + shotNum;
+					imgEls.push(cleanImageEl(els[ei], c, label));
+				}
+				newTracks.push({ id: t.id, name: "Main Track", type: "video", elements: imgEls, isMain: true, muted: false, hidden: false, volume: 1 });
+			} else if (t.type === "audio") {
+				for (var ai = 0; ai < els.length; ai++) {
+					els[ai] = fixAudioEl(els[ai]);
+				}
+				newTracks.push(t);
 			} else {
-				// Keep audio/text tracks as-is
-				newTracks.push(track);
+				newTracks.push(t);
 			}
 		}
-
-		(scene as any).tracks = newTracks;
+		scenes[si].tracks = newTracks;
 	}
-
 	return json;
 }
 
 export default function Editor() {
-	const params = useParams();
-	const projectId = params.project_id as string;
-	const searchParams = useSearchParams();
-	const importUrl = searchParams.get("import");
-	const [importing, setImporting] = useState(false);
+	var params = useParams();
+	var projectId = params.project_id;
+	var searchParams = useSearchParams();
+	var importUrl = searchParams.get("import");
+	var _s = useState(false);
+	var importing = _s[0];
+	var setImporting = _s[1];
 
-	useEffect(() => {
+	useEffect(function() {
 		if (!importUrl) return;
-		(async () => {
+		(async function() {
 			setImporting(true);
 			try {
-				const res = await fetch(importUrl);
-				if (!res.ok) { window.location.replace(`/editor/${projectId}`); return; }
-				const json = await res.json();
-				if (!json.metadata?.id || !Array.isArray(json.scenes) || json.version !== 10) {
-					window.location.replace(`/editor/${projectId}`); return;
+				var res = await fetch(importUrl);
+				if (!res.ok) { window.location.replace('/editor/' + projectId); return; }
+				var json = await res.json();
+				if (!json.metadata || !json.metadata.id || !Array.isArray(json.scenes) || json.version !== 10) {
+					window.location.replace('/editor/' + projectId); return;
 				}
-				const processed = postProcessProject(json);
+				var processed = postProcess(json);
 				localStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(processed));
 				sessionStorage.setItem(PENDING_IMPORT_KEY, "1");
-				window.location.replace(`/editor/${json.metadata.id}`);
-			} catch { window.location.replace(`/editor/${projectId}`); }
+				window.location.replace('/editor/' + json.metadata.id);
+			} catch (e) { window.location.replace('/editor/' + projectId); }
 		})();
 	}, [importUrl, projectId]);
 
-	if (importing) return <div className="flex h-screen items-center justify-center bg-background"><div className="text-center space-y-4"><div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" /><p className="text-sm text-muted-foreground">Importing project...</p></div></div>;
-	return (<MobileGate><EditorProvider projectId={projectId}><div className="bg-background flex h-screen w-screen flex-col overflow-hidden"><EditorHeader /><div className="min-h-0 min-w-0 flex-1"><EditorLayout /></div><AIPanelWrapper /><Onboarding /><MigrationDialog /><BackgroundTasksWidget /><CommandPalette /></div></EditorProvider></MobileGate>);
+	if (importing) return React.createElement('div', { className: "flex h-screen items-center justify-center bg-background" }, React.createElement('div', { className: "text-center space-y-4" }, React.createElement('div', { className: "animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" }), React.createElement('p', { className: "text-sm text-muted-foreground" }, "Importing project...")));
+
+	return React.createElement(MobileGate, null, React.createElement(EditorProvider, { projectId: projectId }, React.createElement('div', { className: "bg-background flex h-screen w-screen flex-col overflow-hidden" }, React.createElement(EditorHeader), React.createElement('div', { className: "min-h-0 min-w-0 flex-1" }, React.createElement(EditorLayout)), React.createElement(AIPanelWrapper), React.createElement(Onboarding), React.createElement(MigrationDialog), React.createElement(BackgroundTasksWidget), React.createElement(CommandPalette))));
 }
 
 function EditorLayout() {
 	usePasteMedia(); useTranscribePrompt();
-	const { panels, setPanel } = usePanelStore();
-	const ts = useTranscriptStore((s) => s.segments);
-	const isT = useTranscriptStore((s) => s.isTranscribing);
-	const editor = useEditor();
-	const htc = editor.timeline.getTracks().some(t => t.elements.length > 0);
-	const hm = editor.timeline.getTracks().some(t => (t.type === "video" || t.type === "audio"||t.type==="image") && t.elements.length > 0);
-	const ht = hm && (ts.length > 0 || isT);
-	const rr = useRef(false);
-	useEffect(() => { if(rr.current)return;const s=useTranscriptStore.getState().segments;if(s.length>0)return;const tr=editor.timeline.getTracks();if(!tr.some(t=>(t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0))return;const tt=tr.find(t=>t.type==="text"&&t.elements.length>0);if(!tt)return;const se=[...tt.elements].sort((a,b)=>a.startTime-b.startTime);if(se.length===0)return;const sg=se.map((el,i)=>{const te=el as TextElement;const tx=te.content||te.name||"";const sw=tx.trim().split(/\s+/).filter(Boolean);const sd=(el.startTime+el.duration)-el.startTime;const wd=sw.length>0?sd/sw.length:sd;return{id:i,text:tx,start:el.startTime,end:el.startTime+el.duration,words:sw.map((w,wi)=>({word:w,start:el.startTime+wi*wd,end:el.startTime+(wi+1)*wd,confidence:0.9}))}});if(sg.length>0){rr.current=true;useTranscriptStore.getState().setSegments(sg)}},[editor]);
-	useEffect(()=>{return editor.timeline.subscribe(()=>{const{s}=useTranscriptStore.getState();if(s.length===0)return;if(!editor.timeline.getTracks().some(t=>(t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0))useTranscriptStore.getState().reset()})},[editor]);
-	return (<ResizablePanelGroup direction="vertical" className="size-full gap-[0.18rem]" onLayout={s=>{setPanel("mainContent",s[0]??panels.mainContent);setPanel("timeline",s[1]??panels.timeline)}}><ResizablePanel defaultSize={panels.mainContent} minSize={30} maxSize={85} className="min-h-0"><ResizablePanelGroup direction="horizontal" className="size-full gap-[0.19rem] px-3" onLayout={s=>{setPanel("tools",s[0]??panels.tools);setPanel("preview",s[1]??panels.preview);setPanel("properties",s[2]??panels.properties)}}><ResizablePanel defaultSize={panels.tools} minSize={15} maxSize={40} className="min-w-0"><AssetsPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.preview} minSize={30} className="min-h-0 min-w-0 flex-1"><PreviewPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.properties} minSize={15} maxSize={40} className="min-w-0">{ht||htc?<RightPanel className="size-full" />:<EmptyEditorGuide />}</ResizablePanel></ResizablePanelGroup></ResizablePanel>{ht&&<div className="flex justify-center px-3 py-1"><QuickActionsBar /></div>}<ResizableHandle withHandle /><ResizablePanel defaultSize={panels.timeline} minSize={15} maxSize={70} className="min-h-0 px-3 pb-3"><Timeline /></ResizablePanel></ResizablePanelGroup>);
+	var _ps = usePanelStore(); var panels = _ps.panels; var setPanel = _ps.setPanel;
+	var _ts = useTranscriptStore(); var ts = _ts.segments; var isT = _ts.isTranscribing;
+	var editor = useEditor();
+	var htc = editor.timeline.getTracks().some(function(t) { return t.elements.length > 0; });
+	var hm = editor.timeline.getTracks().some(function(t) { return (t.type === "video" || t.type === "audio" || t.type === "image") && t.elements.length > 0; });
+	var ht = hm && (ts.length > 0 || isT);
+	return React.createElement(ResizablePanelGroup, { direction: "vertical", className: "size-full gap-[0.18rem]", onLayout: function(s) { setPanel("mainContent", s[0] || panels.mainContent); setPanel("timeline", s[1] || panels.timeline); } },
+		React.createElement(ResizablePanel, { defaultSize: panels.mainContent, minSize: 30, maxSize: 85, className: "min-h-0" },
+			React.createElement(ResizablePanelGroup, { direction: "horizontal", className: "size-full gap-[0.19rem] px-3", onLayout: function(s) { setPanel("tools", s[0] || panels.tools); setPanel("preview", s[1] || panels.preview); setPanel("properties", s[2] || panels.properties); } },
+				React.createElement(ResizablePanel, { defaultSize: panels.tools, minSize: 15, maxSize: 40, className: "min-w-0" }, React.createElement(AssetsPanel)),
+				React.createElement(ResizableHandle, { withHandle: true }),
+				React.createElement(ResizablePanel, { defaultSize: panels.preview, minSize: 30, className: "min-h-0 min-w-0 flex-1" }, React.createElement(PreviewPanel)),
+				React.createElement(ResizableHandle, { withHandle: true }),
+				React.createElement(ResizablePanel, { defaultSize: panels.properties, minSize: 15, maxSize: 40, className: "min-w-0" }, ht || htc ? React.createElement(RightPanel, { className: "size-full" }) : React.createElement(EmptyEditorGuide))
+			)
+		),
+		ht ? React.createElement('div', { className: "flex justify-center px-3 py-1" }, React.createElement(QuickActionsBar)) : null,
+		React.createElement(ResizableHandle, { withHandle: true }),
+		React.createElement(ResizablePanel, { defaultSize: panels.timeline, minSize: 15, maxSize: 70, className: "min-h-0 px-3 pb-3" }, React.createElement(Timeline))
+	);
 }
