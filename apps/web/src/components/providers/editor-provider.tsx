@@ -33,10 +33,9 @@ function buildTProject(json: Record<string, unknown>): TProject {
 	} as TProject;
 }
 
-interface EditorProviderProps {
-	projectId: string;
-	children: React.ReactNode;
-}
+function delay(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
+interface EditorProviderProps { projectId: string; children: React.ReactNode; }
 
 export function EditorProvider({ projectId, children }: EditorProviderProps) {
 	const editor = useEditor();
@@ -47,11 +46,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 	const activeProject = editor.project.getActiveOrNull();
 
 	useEffect(() => {
-		if (isLoading) {
-			disableKeybindings();
-		} else {
-			enableKeybindings();
-		}
+		if (isLoading) disableKeybindings(); else enableKeybindings();
 	}, [isLoading, disableKeybindings, enableKeybindings]);
 
 	useEffect(() => {
@@ -66,43 +61,30 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 				prefetchFontAtlas();
 			} catch (err) {
 				if (cancelled) return;
-
-				const isNotFound =
-					err instanceof Error &&
-					(err.message.includes("not found") ||
-						err.message.includes("does not exist"));
-
-				if (!isNotFound) {
-					setError(err instanceof Error ? err.message : "Failed to load project");
-					setIsLoading(false);
-					return;
-				}
+				const isNotFound = err instanceof Error && (err.message.includes("not found") || err.message.includes("does not exist"));
+				if (!isNotFound) { setError(err instanceof Error ? err.message : "Failed"); setIsLoading(false); return; }
 
 				try {
-					const stored = sessionStorage.getItem(PENDING_IMPORT_KEY);
+					const stored = localStorage.getItem(PENDING_IMPORT_KEY) || sessionStorage.getItem(PENDING_IMPORT_KEY);
 					if (stored) {
-						sessionStorage.removeItem(PENDING_IMPORT_KEY);
 						const json = JSON.parse(stored);
 						if (json.metadata?.id && json.version === 10) {
 							const project = buildTProject(json);
 							await editor.storage.saveProject({ project });
+							await delay(300);
 							await editor.project.loadProject({ id: project.metadata.id });
+							localStorage.removeItem(PENDING_IMPORT_KEY);
+							sessionStorage.removeItem(PENDING_IMPORT_KEY);
 							if (cancelled) return;
 							setIsLoading(false);
 							prefetchFontAtlas();
-							if (project.metadata.id !== projectId) {
-								router.replace(`/editor/${project.metadata.id}`);
-							}
+							if (project.metadata.id !== projectId) router.replace(`/editor/${project.metadata.id}`);
 							return;
 						}
 					}
-
 					const newProjectId = await editor.project.createNewProject({ name: "Untitled Project" });
 					router.replace(`/editor/${newProjectId}`);
-				} catch (_createErr) {
-					setError("Failed to create project");
-					setIsLoading(false);
-				}
+				} catch (_createErr) { setError("Failed to create project"); setIsLoading(false); }
 			}
 		};
 
@@ -110,56 +92,19 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 		return () => { cancelled = true; };
 	}, [projectId, editor, router]);
 
-	if (error) {
-		return (
-			<div className="bg-background flex h-screen w-screen items-center justify-center">
-				<div className="flex flex-col items-center gap-4">
-					<p className="text-destructive text-sm">{error}</p>
-				</div>
-			</div>
-		);
-	}
+	if (error) return <div className="bg-background flex h-screen w-screen items-center justify-center"><div className="flex flex-col items-center gap-4"><p className="text-destructive text-sm">{error}</p></div></div>;
+	if (isLoading) return <div className="bg-background flex h-screen w-screen items-center justify-center"><div className="flex flex-col items-center gap-4"><Loader2 className="text-muted-foreground size-8 animate-spin" /><p className="text-muted-foreground text-sm">Loading project...</p></div></div>;
+	if (!activeProject) return <div className="bg-background flex h-screen w-screen items-center justify-center"><div className="flex flex-col items-center gap-4"><Loader2 className="text-muted-foreground size-8 animate-spin" /><p className="text-muted-foreground text-sm">Exiting project...</p></div></div>;
 
-	if (isLoading) {
-		return (
-			<div className="bg-background flex h-screen w-screen items-center justify-center">
-				<div className="flex flex-col items-center gap-4">
-					<Loader2 className="text-muted-foreground size-8 animate-spin" />
-					<p className="text-muted-foreground text-sm">Loading project...</p>
-				</div>
-			</div>
-		);
-	}
-
-	if (!activeProject) {
-		return (
-			<div className="bg-background flex h-screen w-screen items-center justify-center">
-				<div className="flex flex-col items-center gap-4">
-					<Loader2 className="text-muted-foreground size-8 animate-spin" />
-					<p className="text-muted-foreground text-sm">Exiting project...</p>
-				</div>
-			</div>
-		);
-	}
-
-	return (
-		<>
-			<EditorRuntimeBindings />
-			{children}
-		</>
-	);
+	return (<><EditorRuntimeBindings />{children}</>);
 }
 
 function EditorRuntimeBindings() {
 	const editor = useEditor();
 	useEffect(() => {
-		const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-			if (!editor.save.getIsDirty()) return;
-			event.preventDefault();
-			(event as unknown as { returnValue: string }).returnValue = "";
-		};
-		window.addEventListener("beforeunload", handleBeforeUnload);
-		return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+		const h = (event: BeforeUnloadEvent) => { if (!editor.save.getIsDirty()) return; event.preventDefault(); (event as unknown as { returnValue: string }).returnValue = ""; };
+		window.addEventListener("beforeunload", h);
+		return () => window.removeEventListener("beforeunload", h);
 	}, [editor]);
 	useEditorActions();
 	useKeybindingsListener();
