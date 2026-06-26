@@ -2,9 +2,7 @@
 
 import { useParams, useSearchParams } from "next/navigation";
 import {
-	ResizablePanelGroup,
-	ResizablePanel,
-	ResizableHandle,
+	ResizablePanelGroup, ResizablePanel, ResizableHandle,
 } from "@/components/ui/resizable";
 import { AssetsPanel } from "@/components/editor/panels/assets";
 import { Timeline } from "@/components/editor/panels/timeline";
@@ -43,32 +41,19 @@ export default function Editor() {
 		async function fetchAndBridge() {
 			setImporting(true);
 			try {
-				console.log("[import] Fetching:", importUrl);
 				const res = await fetch(importUrl);
-				console.log("[import] Response:", res.status, res.ok);
-				if (!res.ok) {
-					console.error("[import] Fetch failed:", res.status);
-					window.location.replace(`/editor/${projectId}`);
-					return;
-				}
+				if (!res.ok) { window.location.replace(`/editor/${projectId}`); return; }
 				const json = await res.json();
-				console.log("[import] JSON parsed, version:", json.version, "scenes:", json.scenes?.length);
-
 				if (!json.metadata?.id || !Array.isArray(json.scenes) || json.version !== 10) {
-					console.error("[import] Invalid project format");
-					window.location.replace(`/editor/${projectId}`);
-					return;
+					window.location.replace(`/editor/${projectId}`); return;
 				}
-
-				console.log("[import] Storing in sessionStorage, redirecting to:", json.metadata.id);
-				sessionStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(json));
+				localStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(json));
+				sessionStorage.setItem(PENDING_IMPORT_KEY, "1");
 				window.location.replace(`/editor/${json.metadata.id}`);
-			} catch (err) {
-				console.error("[import] Failed:", err);
+			} catch (_err) {
 				window.location.replace(`/editor/${projectId}`);
 			}
 		}
-
 		fetchAndBridge();
 	}, [importUrl, projectId]);
 
@@ -78,7 +63,6 @@ export default function Editor() {
 				<div className="text-center space-y-4">
 					<div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" />
 					<p className="text-sm text-muted-foreground">Importing project...</p>
-					<p className="text-xs text-muted-foreground/60 truncate max-w-md">{importUrl}</p>
 				</div>
 			</div>
 		);
@@ -89,14 +73,9 @@ export default function Editor() {
 			<EditorProvider projectId={projectId}>
 				<div className="bg-background flex h-screen w-screen flex-col overflow-hidden">
 					<EditorHeader />
-					<div className="min-h-0 min-w-0 flex-1">
-						<EditorLayout />
-					</div>
-					<AIPanelWrapper />
-					<Onboarding />
-					<MigrationDialog />
-					<BackgroundTasksWidget />
-					<CommandPalette />
+					<div className="min-h-0 min-w-0 flex-1"><EditorLayout /></div>
+					<AIPanelWrapper /><Onboarding /><MigrationDialog />
+					<BackgroundTasksWidget /><CommandPalette />
 				</div>
 			</EditorProvider>
 		</MobileGate>
@@ -104,20 +83,13 @@ export default function Editor() {
 }
 
 function EditorLayout() {
-	usePasteMedia();
-	useTranscribePrompt();
+	usePasteMedia(); useTranscribePrompt();
 	const { panels, setPanel } = usePanelStore();
 	const transcriptSegments = useTranscriptStore((s) => s.segments);
 	const isTranscribing = useTranscriptStore((s) => s.isTranscribing);
 	const editor = useEditor();
-	const hasTimelineContent = editor.timeline.getTracks().some(
-		(track) => track.elements.length > 0,
-	);
-	const hasMedia = editor.timeline.getTracks().some(
-		(t) =>
-			(t.type === "video" || t.type === "audio") &&
-			t.elements.length > 0,
-	);
+	const hasTimelineContent = editor.timeline.getTracks().some(track => track.elements.length > 0);
+	const hasMedia = editor.timeline.getTracks().some(t => (t.type === "video" || t.type === "audio") && t.elements.length > 0);
 	const hasTranscript = hasMedia && (transcriptSegments.length > 0 || isTranscribing);
 
 	const hasRestoredTranscript = useRef(false);
@@ -125,148 +97,48 @@ function EditorLayout() {
 		if (hasRestoredTranscript.current) return;
 		const storeSegments = useTranscriptStore.getState().segments;
 		if (storeSegments.length > 0) return;
-
 		const tracks = editor.timeline.getTracks();
-
-		const hasMedia = tracks.some(
-			(t) =>
-				(t.type === "video" || t.type === "audio") &&
-				t.elements.length > 0,
-		);
+		const hasMedia = tracks.some(t => (t.type === "video" || t.type === "audio") && t.elements.length > 0);
 		if (!hasMedia) return;
-
-		const textTrack = tracks.find(
-			(t) => t.type === "text" && t.elements.length > 0,
-		);
+		const textTrack = tracks.find(t => t.type === "text" && t.elements.length > 0);
 		if (!textTrack) return;
-
-		const sortedElements = [...textTrack.elements]
-			.sort((a, b) => a.startTime - b.startTime);
-
+		const sortedElements = [...textTrack.elements].sort((a, b) => a.startTime - b.startTime);
 		if (sortedElements.length === 0) return;
-
 		const segments = sortedElements.map((el, index) => {
 			const textEl = el as TextElement;
 			const text = textEl.content || textEl.name || "";
-			const start = el.startTime;
-			const end = el.startTime + el.duration;
 			const segWords = text.trim().split(/\s+/).filter(Boolean);
-			const segDuration = end - start;
+			const segDuration = (el.startTime + el.duration) - el.startTime;
 			const wordDuration = segWords.length > 0 ? segDuration / segWords.length : segDuration;
-
-			return {
-				id: index,
-				text,
-				start,
-				end,
-				words: segWords.map((word, wordIndex) => ({
-					word,
-					start: start + wordIndex * wordDuration,
-					end: start + (wordIndex + 1) * wordDuration,
-					confidence: 0.9,
-				})),
-			};
+			return { id: index, text, start: el.startTime, end: el.startTime + el.duration, words: segWords.map((word, wordIndex) => ({ word, start: el.startTime + wordIndex * wordDuration, end: el.startTime + (wordIndex + 1) * wordDuration, confidence: 0.9 })) };
 		});
-
-		if (segments.length > 0) {
-			hasRestoredTranscript.current = true;
-			useTranscriptStore.getState().setSegments(segments);
-		}
+		if (segments.length > 0) { hasRestoredTranscript.current = true; useTranscriptStore.getState().setSegments(segments); }
 	}, [editor]);
 
 	useEffect(() => {
 		return editor.timeline.subscribe(() => {
 			const { segments } = useTranscriptStore.getState();
 			if (segments.length === 0) return;
-
 			const tracks = editor.timeline.getTracks();
-			const hasMedia = tracks.some(
-				(t) =>
-					(t.type === "video" || t.type === "audio") &&
-					t.elements.length > 0,
-			);
-			if (!hasMedia) {
-				useTranscriptStore.getState().reset();
-			}
+			const hasMedia = tracks.some(t => (t.type === "video" || t.type === "audio") && t.elements.length > 0);
+			if (!hasMedia) useTranscriptStore.getState().reset();
 		});
 	}, [editor]);
 
 	return (
-		<ResizablePanelGroup
-			direction="vertical"
-			className="size-full gap-[0.18rem]"
-			onLayout={(sizes) => {
-				setPanel("mainContent", sizes[0] ?? panels.mainContent);
-				setPanel("timeline", sizes[1] ?? panels.timeline);
-			}}
-		>
-			<ResizablePanel
-				defaultSize={panels.mainContent}
-				minSize={30}
-				maxSize={85}
-				className="min-h-0"
-			>
-				<ResizablePanelGroup
-					direction="horizontal"
-					className="size-full gap-[0.19rem] px-3"
-					onLayout={(sizes) => {
-						setPanel("tools", sizes[0] ?? panels.tools);
-						setPanel("preview", sizes[1] ?? panels.preview);
-						setPanel("properties", sizes[2] ?? panels.properties);
-					}}
-				>
-					<ResizablePanel
-						defaultSize={panels.tools}
-						minSize={15}
-						maxSize={40}
-						className="min-w-0"
-					>
-						<AssetsPanel />
-					</ResizablePanel>
-
+		<ResizablePanelGroup direction="vertical" className="size-full gap-[0.18rem]" onLayout={(sizes) => { setPanel("mainContent", sizes[0] ?? panels.mainContent); setPanel("timeline", sizes[1] ?? panels.timeline); }}>
+			<ResizablePanel defaultSize={panels.mainContent} minSize={30} maxSize={85} className="min-h-0">
+				<ResizablePanelGroup direction="horizontal" className="size-full gap-[0.19rem] px-3" onLayout={(sizes) => { setPanel("tools", sizes[0] ?? panels.tools); setPanel("preview", sizes[1] ?? panels.preview); setPanel("properties", sizes[2] ?? panels.properties); }}>
+					<ResizablePanel defaultSize={panels.tools} minSize={15} maxSize={40} className="min-w-0"><AssetsPanel /></ResizablePanel>
 					<ResizableHandle withHandle />
-
-					<ResizablePanel
-						defaultSize={panels.preview}
-						minSize={30}
-						className="min-h-0 min-w-0 flex-1"
-					>
-						<PreviewPanel />
-					</ResizablePanel>
-
+					<ResizablePanel defaultSize={panels.preview} minSize={30} className="min-h-0 min-w-0 flex-1"><PreviewPanel /></ResizablePanel>
 					<ResizableHandle withHandle />
-
-					<ResizablePanel
-						defaultSize={panels.properties}
-						minSize={15}
-						maxSize={40}
-						className="min-w-0"
-					>
-						{hasTranscript || hasTimelineContent ? (
-							<RightPanel className="size-full" />
-						) : (
-							<EmptyEditorGuide />
-						)}
-					</ResizablePanel>
+					<ResizablePanel defaultSize={panels.properties} minSize={15} maxSize={40} className="min-w-0">{hasTranscript || hasTimelineContent ? <RightPanel className="size-full" /> : <EmptyEditorGuide />}</ResizablePanel>
 				</ResizablePanelGroup>
 			</ResizablePanel>
-
-			{hasTranscript && (
-				<div className="flex justify-center px-3 py-1">
-					<QuickActionsBar />
-				</div>
-			)}
-
+			{hasTranscript && <div className="flex justify-center px-3 py-1"><QuickActionsBar /></div>}
 			<ResizableHandle withHandle />
-
-			<ResizablePanel
-				defaultSize={panels.timeline}
-				minSize={15}
-				maxSize={70}
-				className="min-h-0 px-3 pb-3"
-			>
-				<Timeline />
-			</ResizablePanel>
+			<ResizablePanel defaultSize={panels.timeline} minSize={15} maxSize={70} className="min-h-0 px-3 pb-3"><Timeline /></ResizablePanel>
 		</ResizablePanelGroup>
 	);
 }
