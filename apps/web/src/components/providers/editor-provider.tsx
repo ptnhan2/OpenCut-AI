@@ -60,25 +60,86 @@ async function importProjectPhase1(json) {
   return projectId;
 }
 
+/**
+ * Import media phase 2: tạo PNG blobs từ color palette, lưu vào storage qua addMediaAsset,
+ * rồi cập nhật mediaId + chuẩn hóa startTime trong TẤT CẢ scenes.
+ *
+ * Hai vấn đề cần sửa:
+ * 1. mediaId: addMediaAsset tạo UUID mới → phải map old→new cho tất cả scenes
+ *    (dùng setScenes thay vì updateElements vì updateElements chỉ sửa scene hiện tại)
+ * 2. startTime: pipeline xuất absolute timestamps (liên tục qua scenes), nhưng OpenCut-AI
+ *    cần mỗi scene có timeline riêng từ 0 → trừ đi minStart của từng scene
+ *
+ * @param editor - EditorCore singleton instance
+ * @param projectId - Project ID to associate media with
+ * @sideEffect Saves media assets to IndexedDB/OPFS storage, normalizes all scene timelines, triggers renderer re-render
+ */
 async function importMediaPhase2(editor, projectId) {
   var stored = sessionStorage.getItem(PENDING_MEDIA_KEY);
   if (!stored) return;
   sessionStorage.removeItem(PENDING_MEDIA_KEY);
-  
+
   var mediaInfo = JSON.parse(stored);
-  var assets = [];
-  
+  var idMap = {}; // old mediaId (media-import-xxx) → new UUID from addMediaAsset
+
+  // Step 1: tạo PNG blobs và dùng addMediaAsset để lưu vào storage (same code path as drag-drop)
   for (var i = 0; i < mediaInfo.length; i++) {
     var e = mediaInfo[i];
     var blob = await genPNGBlob(e.color[0], e.color[1], e.color[2]);
     var file = new File([blob], 'shot.png', { type: 'image/png' });
     var url = URL.createObjectURL(file);
-    assets.push({ id: e.mediaId, name: e.label, type: "image", file: file, url: url, width: 640, height: 360, label: e.label });
+    var newId = await editor.media.addMediaAsset({
+      projectId: projectId,
+      asset: {
+        name: e.label,
+        type: "image",
+        file: file,
+        url: url,
+        width: 640,
+        height: 360,
+        label: e.label,
+      },
+    });
+    idMap[e.mediaId] = newId;
   }
-  
-  if (assets.length > 0) {
-    editor.media.setAssets({ assets: assets });
+
+  // Step 2: cập nhật mediaId + chuẩn hóa startTime trong TẤT CẢ scenes
+  // Pipeline dùng absolute timestamps; OpenCut-AI cần mỗi scene bắt đầu từ 0
+  var scenes = editor.scenes.getScenes();
+  var updatedScenes = [];
+  for (var si = 0; si < scenes.length; si++) {
+    var scene = scenes[si];
+
+    // Tính offset = startTime nhỏ nhất trong scene (để chuẩn hóa về 0)
+    var minStart = Infinity;
+    for (var t0 = 0; t0 < (scene.tracks || []).length; t0++) {
+      var trk0 = scene.tracks[t0];
+      for (var e0 = 0; e0 < (trk0.elements || []).length; e0++) {
+        if (trk0.elements[e0].startTime < minStart) minStart = trk0.elements[e0].startTime;
+      }
+    }
+    if (minStart === Infinity) minStart = 0;
+
+    var newTracks = [];
+    for (var ti = 0; ti < (scene.tracks || []).length; ti++) {
+      var track = scene.tracks[ti];
+      var newEls = [];
+      for (var ei = 0; ei < (track.elements || []).length; ei++) {
+        var el = track.elements[ei];
+        var patch = { startTime: el.startTime - minStart };
+        if (el.mediaId && idMap[el.mediaId]) {
+          patch.mediaId = idMap[el.mediaId];
+        }
+        newEls.push(Object.assign({}, el, patch));
+      }
+      newTracks.push(Object.assign({}, track, { elements: newEls }));
+    }
+    updatedScenes.push(Object.assign({}, scene, { tracks: newTracks }));
   }
+  editor.scenes.setScenes({ scenes: updatedScenes });
+
+  // Lưu project để persist startTime đã chuẩn hóa
+  await editor.project.saveCurrentProject();
 }
 
 interface EditorProviderProps { projectId: string; children: React.ReactNode; }
