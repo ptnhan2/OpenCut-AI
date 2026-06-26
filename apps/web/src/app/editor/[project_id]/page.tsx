@@ -43,13 +43,16 @@ export default function Editor() {
 		async function fetchAndBridge() {
 			setImporting(true);
 			try {
+				console.log("[import] Fetching:", importUrl);
 				const res = await fetch(importUrl);
+				console.log("[import] Response:", res.status, res.ok);
 				if (!res.ok) {
 					console.error("[import] Fetch failed:", res.status);
 					window.location.replace(`/editor/${projectId}`);
 					return;
 				}
 				const json = await res.json();
+				console.log("[import] JSON parsed, version:", json.version, "scenes:", json.scenes?.length);
 
 				if (!json.metadata?.id || !Array.isArray(json.scenes) || json.version !== 10) {
 					console.error("[import] Invalid project format");
@@ -57,6 +60,7 @@ export default function Editor() {
 					return;
 				}
 
+				console.log("[import] Storing in sessionStorage, redirecting to:", json.metadata.id);
 				sessionStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(json));
 				window.location.replace(`/editor/${json.metadata.id}`);
 			} catch (err) {
