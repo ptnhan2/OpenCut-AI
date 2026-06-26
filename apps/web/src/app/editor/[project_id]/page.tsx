@@ -28,34 +28,56 @@ import { CommandPalette } from "@/components/editor/command-palette";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
 
-function dummyImageDataUrl(r: number, g: number, b: number): string {
-	const w=1920,h=1080;
-	const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="100%" height="100%" fill="rgb(${r},${g},${b})"/></svg>`;
-	return "data:image/svg+xml,"+encodeURIComponent(svg);
+function dummyImageDataUrl(r: number, g: number, b: number, label: string): string {
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><rect width="100%" height="100%" fill="rgb(${r},${g},${b})"/><text x="960" y="540" text-anchor="middle" dominant-baseline="middle" font-family="Arial" font-size="60" fill="white" opacity="0.7">${label}</text></svg>`;
+	return "data:image/svg+xml," + encodeURIComponent(svg);
+}
+
+function toImageElement(el: Record<string, unknown>, color: number[], label: string): Record<string, unknown> {
+	return {
+		id: el.id, name: label, duration: el.duration, startTime: el.startTime,
+		trimStart: 0, trimEnd: 0, sourceDuration: el.duration,
+		type: "image", sourceType: "library", sourceUrl: dummyImageDataUrl(color[0], color[1], color[2], label),
+		transform: { scale: 1, position: { x: 0, y: 0 }, rotate: 0 },
+		opacity: 1, blendMode: "normal", hidden: false, playbackRate: 1,
+	};
 }
 
 function postProcessProject(json: Record<string, unknown>): Record<string, unknown> {
 	const scenes = json.scenes as Array<Record<string, unknown>>;
-	const colors = [[26,26,46],[22,33,62],[15,52,96],[83,52,131],[45,106,79],[127,79,36],[88,47,14],[147,102,57]];
-	let idx = 0;
+	const palette = [[26,26,46],[22,33,62],[15,52,96],[83,52,131],[45,106,79],[127,79,36],[88,47,14],[147,102,57]];
+	let shotNum = 0;
 
 	for (const scene of scenes) {
 		const tracks = scene.tracks as Array<Record<string, unknown>>;
+		const newTracks: Array<Record<string, unknown>> = [];
+
 		for (const track of tracks) {
+			const tType = track.type as string;
 			const elements = track.elements as Array<Record<string, unknown>>;
-			for (const el of elements) {
-				if (el.type === "video") {
-					const [r,g,b] = colors[idx % colors.length];
-					el.type = "image";
-					el.sourceType = "library";
-					el.sourceUrl = dummyImageDataUrl(r,g,b);
-					delete el.mediaId;
-					delete (el as any).muted;
-					idx++;
-				}
+
+			if (tType === "video") {
+				// Convert video track to image track with placeholder images
+				const imgElements = elements.map(el => {
+					shotNum++;
+					const color = palette[shotNum % palette.length];
+					const label = `Shot ${shotNum}: ${(el.name as string || '').replace('Shot ', '')}`;
+					return toImageElement(el, color, label);
+				});
+				newTracks.push({
+					id: track.id, name: "Main Track", type: "video",
+					elements: imgElements, isMain: true,
+					muted: false, hidden: false, volume: 1,
+				});
+			} else {
+				// Keep audio/text tracks as-is
+				newTracks.push(track);
 			}
 		}
+
+		(scene as any).tracks = newTracks;
 	}
+
 	return json;
 }
 
@@ -68,7 +90,7 @@ export default function Editor() {
 
 	useEffect(() => {
 		if (!importUrl) return;
-		async function f() {
+		(async () => {
 			setImporting(true);
 			try {
 				const res = await fetch(importUrl);
@@ -77,17 +99,15 @@ export default function Editor() {
 				if (!json.metadata?.id || !Array.isArray(json.scenes) || json.version !== 10) {
 					window.location.replace(`/editor/${projectId}`); return;
 				}
-				const p = postProcessProject(json);
-				localStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(p));
+				const processed = postProcessProject(json);
+				localStorage.setItem(PENDING_IMPORT_KEY, JSON.stringify(processed));
 				sessionStorage.setItem(PENDING_IMPORT_KEY, "1");
 				window.location.replace(`/editor/${json.metadata.id}`);
-			} catch (_e) { window.location.replace(`/editor/${projectId}`); }
-		}
-		f();
+			} catch { window.location.replace(`/editor/${projectId}`); }
+		})();
 	}, [importUrl, projectId]);
 
 	if (importing) return <div className="flex h-screen items-center justify-center bg-background"><div className="text-center space-y-4"><div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" /><p className="text-sm text-muted-foreground">Importing project...</p></div></div>;
-
 	return (<MobileGate><EditorProvider projectId={projectId}><div className="bg-background flex h-screen w-screen flex-col overflow-hidden"><EditorHeader /><div className="min-h-0 min-w-0 flex-1"><EditorLayout /></div><AIPanelWrapper /><Onboarding /><MigrationDialog /><BackgroundTasksWidget /><CommandPalette /></div></EditorProvider></MobileGate>);
 }
 
