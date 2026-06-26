@@ -10,6 +10,7 @@ export class PlaybackManager {
 	private listeners = new Set<() => void>();
 	private playbackTimer: number | null = null;
 	private lastUpdate = 0;
+	private notifyFrameCounter = 0;
 	private shuttleSpeed = 0;
 	private shuttleDirection: "forward" | "reverse" | null = null;
 	private lastShuttlePress = 0;
@@ -221,13 +222,19 @@ export class PlaybackManager {
 			}
 		} else {
 			this.currentTime = newTime;
-			this.notify();
 
 			window.dispatchEvent(
 				new CustomEvent("playback-update", {
 					detail: { time: newTime },
 				}),
 			);
+
+			// Throttle React re-renders: chỉ notify mỗi 6 frames (~10fps)
+			// Canvas render qua useRafLoop đọc getCurrentTime() trực tiếp nên vẫn 60fps
+			this.notifyFrameCounter++;
+			if (this.notifyFrameCounter % 6 === 0) {
+				this.notify();
+			}
 		}
 
 		this.playbackTimer = requestAnimationFrame(this.updateTime);
