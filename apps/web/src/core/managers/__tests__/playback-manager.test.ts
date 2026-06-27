@@ -57,8 +57,11 @@ describe("PlaybackManager — continuous-play decoupled from React notify", () =
 			}
 		};
 		g.window = {
-			dispatchEvent: (ev: { type: string; detail?: { time?: number } }) => {
-				dispatched.push({ type: ev.type, time: ev.detail?.time });
+			dispatchEvent: (ev: { type: string; detail?: unknown }) => {
+				dispatched.push({
+					type: ev.type,
+					time: (ev.detail as { time?: number } | undefined)?.time,
+				});
 			},
 		};
 	});
