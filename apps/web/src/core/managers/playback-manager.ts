@@ -10,7 +10,6 @@ export class PlaybackManager {
 	private listeners = new Set<() => void>();
 	private playbackTimer: number | null = null;
 	private lastUpdate = 0;
-	private lastNotifyMs = 0;
 	private shuttleSpeed = 0;
 	private shuttleDirection: "forward" | "reverse" | null = null;
 	private lastShuttlePress = 0;
@@ -188,9 +187,10 @@ export class PlaybackManager {
 
 	/**
 	 * Cập nhật thời gian playback mỗi animation frame. Dùng speed=1 cho normal play,
-	 * shuttleSpeed cho shuttle mode. Dispatch playback-update event mỗi frame để canvas
-	 * render qua useRafLoop. notify() chỉ gọi mỗi 500ms để tránh ResizablePanelGroup
-	 * re-render block main thread.
+	 * shuttleSpeed cho shuttle mode. Dispatch playback-update event mỗi frame (60fps)
+	 * để canvas + playhead + timecode đọc thời gian mà không cần React re-render.
+	 * KHÔNG gọi notify() mỗi frame (Issue #235): notify() chỉ còn ở play/pause/seek/
+	 * boundary để cập nhật UI state (isPlaying...), tránh re-render ResizablePanelGroup.
 	 */
 	private updateTime = (): void => {
 		if (!this.isPlaying) return;
@@ -229,18 +229,17 @@ export class PlaybackManager {
 		} else {
 			this.currentTime = newTime;
 
+			// Phát sự kiện 60fps cho các consumer thời gian-thực: canvas (đọc qua
+			// getCurrentTime trong useRafLoop), playhead + timecode (đọc qua listener).
 			window.dispatchEvent(
 				new CustomEvent("playback-update", {
 					detail: { time: newTime },
 				}),
 			);
 
-			// Throttle notify: 2 lần/giây để cập nhật playhead mà không cause heavy render
-			// (ResizablePanelGroup + 51 assets render mất ~200-500ms/lần)
-			if (now - this.lastNotifyMs >= 500) {
-				this.lastNotifyMs = now;
-				this.notify();
-			}
+			// KHÔNG gọi notify() mỗi frame: useEditor() re-render toàn bộ React tree
+			// (ResizablePanelGroup + 51 assets) gây UI lag ~1s (Issue #235). notify()
+			// chỉ còn ở play/pause/seek/boundary — đủ cho UI state (isPlaying, v.v.).
 		}
 
 		this.playbackTimer = requestAnimationFrame(this.updateTime);

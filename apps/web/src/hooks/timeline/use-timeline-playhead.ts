@@ -218,38 +218,41 @@ export function useTimelinePlayhead({
 		zoomLevel,
 	]);
 
+	// Auto-scroll timeline theo playhead qua playback-update event (60fps), độc lập với
+	// React re-render. Sau Issue #235, useEditor() không re-render khi play nên
+	// playheadPosition (đọc qua useEditor) bị đóng băng — phải đọc time qua event.
 	useEffect(() => {
 		if (!isPlaying || isScrubbing) return;
 
-		const rulerViewport = rulerScrollRef.current;
-		const tracksViewport = tracksScrollRef.current;
-		if (!rulerViewport || !tracksViewport) return;
+		const onTick = (event: Event) => {
+			const time = (event as CustomEvent<{ time: number }>).detail?.time;
+			if (typeof time !== "number") return;
 
-		const playheadPixels =
-			playheadPosition * TIMELINE_CONSTANTS.PIXELS_PER_SECOND * zoomLevel;
-		const viewportWidth = rulerViewport.clientWidth;
-		const scrollMinimum = 0;
-		const scrollMaximum = rulerViewport.scrollWidth - viewportWidth;
+			const rulerViewport = rulerScrollRef.current;
+			const tracksViewport = tracksScrollRef.current;
+			if (!rulerViewport || !tracksViewport) return;
 
-		const needsScroll =
-			playheadPixels < rulerViewport.scrollLeft ||
-			playheadPixels > rulerViewport.scrollLeft + viewportWidth;
+			const playheadPixels =
+				time * TIMELINE_CONSTANTS.PIXELS_PER_SECOND * zoomLevel;
+			const viewportWidth = rulerViewport.clientWidth;
+			const scrollMaximum = rulerViewport.scrollWidth - viewportWidth;
 
-		if (needsScroll) {
-			const desiredScroll = Math.max(
-				scrollMinimum,
-				Math.min(scrollMaximum, playheadPixels - viewportWidth / 2),
-			);
-			rulerViewport.scrollLeft = tracksViewport.scrollLeft = desiredScroll;
-		}
-	}, [
-		playheadPosition,
-		zoomLevel,
-		rulerScrollRef,
-		tracksScrollRef,
-		isScrubbing,
-		isPlaying,
-	]);
+			const needsScroll =
+				playheadPixels < rulerViewport.scrollLeft ||
+				playheadPixels > rulerViewport.scrollLeft + viewportWidth;
+
+			if (needsScroll) {
+				const desiredScroll = Math.max(
+					0,
+					Math.min(scrollMaximum, playheadPixels - viewportWidth / 2),
+				);
+				rulerViewport.scrollLeft = tracksViewport.scrollLeft = desiredScroll;
+			}
+		};
+
+		window.addEventListener("playback-update", onTick);
+		return () => window.removeEventListener("playback-update", onTick);
+	}, [isPlaying, isScrubbing, zoomLevel, rulerScrollRef, tracksScrollRef]);
 
 	return {
 		playheadPosition,
