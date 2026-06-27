@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import {
 	getCenteredLineLeft,
 	TIMELINE_INDICATOR_LINE_WIDTH_PX,
@@ -55,6 +55,24 @@ export function TimelinePlayhead({
 		zoomLevel,
 	});
 	const leftPosition = getCenteredLineLeft({ centerPixel: centerPosition });
+
+	// Khi đang play, đè vị trí playhead qua sự kiện playback-update 60fps (imperative,
+	// bypass React) để playhead chạy mượt như CapCut. useEditor() không re-render trong
+	// khi play (xem playback-manager.ts), nên giá trị do event gán vào style.left được
+	// giữ nguyên giữa các frame. Khi pause/seek, React re-render và đồng bộ lại
+	// leftPosition từ playheadPosition hiện tại.
+	useEffect(() => {
+		const el = playheadRef.current;
+		if (!el) return;
+		const onTick = (event: Event) => {
+			const time = (event as CustomEvent<{ time: number }>).detail?.time;
+			if (typeof time !== "number") return;
+			const center = timelineTimeToSnappedPixels({ time, zoomLevel });
+			el.style.left = `${getCenteredLineLeft({ centerPixel: center })}px`;
+		};
+		window.addEventListener("playback-update", onTick);
+		return () => window.removeEventListener("playback-update", onTick);
+	}, [zoomLevel, playheadRef]);
 
 	const handlePlayheadKeyDown = (
 		event: React.KeyboardEvent<HTMLDivElement>,
