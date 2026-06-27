@@ -10,6 +10,7 @@ export class PlaybackManager {
 	private listeners = new Set<() => void>();
 	private playbackTimer: number | null = null;
 	private lastUpdate = 0;
+	private lastNotifyMs = 0;
 	private shuttleSpeed = 0;
 	private shuttleDirection: "forward" | "reverse" | null = null;
 	private lastShuttlePress = 0;
@@ -185,6 +186,12 @@ export class PlaybackManager {
 		}
 	}
 
+	/**
+	 * Cập nhật thời gian playback mỗi animation frame. Dùng speed=1 cho normal play,
+	 * shuttleSpeed cho shuttle mode. Dispatch playback-update event mỗi frame để canvas
+	 * render qua useRafLoop. notify() chỉ gọi mỗi 500ms để tránh ResizablePanelGroup
+	 * re-render block main thread.
+	 */
 	private updateTime = (): void => {
 		if (!this.isPlaying) return;
 
@@ -192,7 +199,7 @@ export class PlaybackManager {
 		const delta = (now - this.lastUpdate) / 1000;
 		this.lastUpdate = now;
 
-		const speed = this.shuttleDirection === "reverse" ? -this.shuttleSpeed : this.shuttleSpeed;
+		const speed = this.shuttleDirection === null ? 1 : this.shuttleDirection === "reverse" ? -this.shuttleSpeed : this.shuttleSpeed;
 		const newTime = this.currentTime + delta * speed;
 		const duration = this.editor.timeline.getTotalDuration();
 
@@ -221,13 +228,19 @@ export class PlaybackManager {
 			}
 		} else {
 			this.currentTime = newTime;
-			this.notify();
 
 			window.dispatchEvent(
 				new CustomEvent("playback-update", {
 					detail: { time: newTime },
 				}),
 			);
+
+			// Throttle notify: 2 lần/giây để cập nhật playhead mà không cause heavy render
+			// (ResizablePanelGroup + 51 assets render mất ~200-500ms/lần)
+			if (now - this.lastNotifyMs >= 500) {
+				this.lastNotifyMs = now;
+				this.notify();
+			}
 		}
 
 		this.playbackTimer = requestAnimationFrame(this.updateTime);
