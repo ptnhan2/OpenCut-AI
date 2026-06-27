@@ -186,6 +186,12 @@ export class PlaybackManager {
 		}
 	}
 
+	/**
+	 * Cập nhật thời gian playback mỗi animation frame. Dùng speed=1 cho normal play,
+	 * shuttleSpeed cho shuttle mode. Dispatch playback-update event mỗi frame để canvas
+	 * render qua useRafLoop. notify() chỉ gọi mỗi 500ms để tránh ResizablePanelGroup
+	 * re-render block main thread.
+	 */
 	private updateTime = (): void => {
 		if (!this.isPlaying) return;
 

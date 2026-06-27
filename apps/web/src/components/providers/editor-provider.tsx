@@ -64,60 +64,79 @@ async function importProjectPhase1(json) {
  * Import media phase 2: tạo PNG blobs từ color palette, lưu vào storage qua addMediaAsset,
  * rồi cập nhật mediaId + chuẩn hóa startTime trong TẤT CẢ scenes.
  *
- * Hai vấn đề cần sửa:
- * 1. mediaId: addMediaAsset tạo UUID mới → phải map old→new cho tất cả scenes
- *    (dùng setScenes thay vì updateElements vì updateElements chỉ sửa scene hiện tại)
- * 2. startTime: pipeline xuất absolute timestamps (liên tục qua scenes), nhưng OpenCut-AI
- *    cần mỗi scene có timeline riêng từ 0 → trừ đi minStart của từng scene
+ * 1. mediaId: addMediaAsset tạo UUID mới → map old→new cho tất cả scenes qua setScenes
+ * 2. startTime: pipeline absolute timestamps → normalize per-scene về 0
+ * 3. fontSize: pipeline px → OpenCut-AI units (px * 90 / canvasHeight)
+ * 4. text position: absolute coords → center-relative
+ * 5. audio: upload+mediaId → library+sourceUrl (TTS from Platform)
  *
  * @param editor - EditorCore singleton instance
  * @param projectId - Project ID to associate media with
- * @sideEffect Saves media assets to IndexedDB/OPFS storage, normalizes all scene timelines, triggers renderer re-render
+ * @returns Promise<void>
+ * @sideEffect Saves media assets to IndexedDB/OPFS, normalizes scenes, persists project
  */
-async function importMediaPhase2(editor, projectId) {
+export async function importMediaPhase2(editor, projectId) {
   var stored = sessionStorage.getItem(PENDING_MEDIA_KEY);
   if (!stored) return;
-  sessionStorage.removeItem(PENDING_MEDIA_KEY);
 
-  var mediaInfo = JSON.parse(stored);
-  var idMap = {}; // old mediaId (media-import-xxx) → new UUID from addMediaAsset
+  // Parse mediaInfo — guard against corrupt sessionStorage
+  var mediaInfo;
+  try {
+    mediaInfo = JSON.parse(stored);
+    if (!Array.isArray(mediaInfo)) return;
+  } catch (_parseErr) { return; }
 
-  // Step 1: tạo PNG blobs và dùng addMediaAsset để lưu vào storage (same code path as drag-drop)
+  var idMap = {}; // old mediaId → new UUID
+  var blobUrls = []; // track blob URLs for cleanup
+
+  // Step 1: tạo PNG blobs và dùng addMediaAsset để lưu vào storage
   for (var i = 0; i < mediaInfo.length; i++) {
     var e = mediaInfo[i];
-    var blob = await genPNGBlob(e.color[0], e.color[1], e.color[2]);
-    var file = new File([blob], 'shot.png', { type: 'image/png' });
-    var url = URL.createObjectURL(file);
-    var newId = await editor.media.addMediaAsset({
-      projectId: projectId,
-      asset: {
-        name: e.label,
-        type: "image",
-        file: file,
-        url: url,
-        width: 640,
-        height: 360,
-        label: e.label,
-      },
-    });
-    idMap[e.mediaId] = newId;
+    if (!e || !e.color || !e.mediaId || !e.label) continue;
+    try {
+      var blob = await genPNGBlob(e.color[0], e.color[1], e.color[2]);
+      var file = new File([blob], 'shot.png', { type: 'image/png' });
+      var url = URL.createObjectURL(file);
+      blobUrls.push(url);
+      var newId = await editor.media.addMediaAsset({
+        projectId: projectId,
+        asset: {
+          name: e.label,
+          type: "image",
+          file: file,
+          url: url,
+          width: 640,
+          height: 360,
+          label: e.label,
+        },
+      });
+      idMap[e.mediaId] = newId;
+    } catch (_assetErr) {
+      // single asset failure shouldn't block others
+    } finally {
+      // Revoke blob URL after addMediaAsset save (file is now in OPFS)
+      try { URL.revokeObjectURL(url); } catch (_) {}
+    }
   }
 
-  // Step 2: cập nhật mediaId + chuẩn hóa startTime + fix fontSize + fix audio trong TẤT CẢ scenes
+  // Step 2: cập nhật scenes — normalize startTime, fontSize, position, audio
   var scenes = editor.scenes.getScenes();
-  var canvasHeight = editor.project.getActiveOrNull()?.settings?.canvasSize?.height || 1080;
-  var canvasWidth = editor.project.getActiveOrNull()?.settings?.canvasSize?.width || 1920;
-  var platformOrigin = window.location.origin.replace('3001', '3000');
+  var cs = editor.project.getActiveOrNull()?.settings?.canvasSize;
+  var canvasHeight = cs?.height || 1080;
+  var canvasWidth = cs?.width || 1920;
+  var u = new URL(window.location.origin);
+  u.port = '3000';
+  var platformOrigin = u.origin;
   var updatedScenes = [];
   for (var si = 0; si < scenes.length; si++) {
     var scene = scenes[si];
 
-    // Tính offset = startTime nhỏ nhất trong scene (để chuẩn hóa về 0)
     var minStart = Infinity;
     for (var t0 = 0; t0 < (scene.tracks || []).length; t0++) {
       var trk0 = scene.tracks[t0];
       for (var e0 = 0; e0 < (trk0.elements || []).length; e0++) {
-        if (trk0.elements[e0].startTime < minStart) minStart = trk0.elements[e0].startTime;
+        var st0 = trk0.elements[e0].startTime;
+        if (typeof st0 === "number" && st0 < minStart) minStart = st0;
       }
     }
     if (minStart === Infinity) minStart = 0;
@@ -128,19 +147,14 @@ async function importMediaPhase2(editor, projectId) {
       var newEls = [];
       for (var ei = 0; ei < (track.elements || []).length; ei++) {
         var el = track.elements[ei];
-        var patch = { startTime: el.startTime - minStart };
+        var patch = { startTime: (el.startTime ?? 0) - minStart };
 
-        // Map video/image mediaId → UUID mới
         if (el.mediaId && idMap[el.mediaId]) {
           patch.mediaId = idMap[el.mediaId];
         }
-
-        // Fix fontSize: pipeline dùng pixel trực tiếp, OpenCut-AI scale theo canvasHeight/90
         if (el.type === "text" && el.fontSize) {
           patch.fontSize = el.fontSize * 90 / canvasHeight;
         }
-
-        // Fix text position: pipeline dùng absolute coords, OpenCut-AI dùng center-relative
         if (el.type === "text" && el.transform && el.transform.position) {
           patch.transform = Object.assign({}, el.transform, {
             position: {
@@ -149,8 +163,6 @@ async function importMediaPhase2(editor, projectId) {
             },
           });
         }
-
-        // Fix audio: convert upload+mediaId → library+sourceUrl (TTS files từ Platform)
         if (el.type === "audio" && el.sourceType === "upload" && el.mediaId && el.mediaId.indexOf("media-tts-") === 0) {
           var audioId = el.mediaId.replace("media-tts-", "");
           patch.sourceType = "library";
@@ -165,8 +177,9 @@ async function importMediaPhase2(editor, projectId) {
   }
   editor.scenes.setScenes({ scenes: updatedScenes });
 
-  // Lưu project để persist startTime đã chuẩn hóa
+  // Persist — only clear PENDING_MEDIA_KEY after save succeeds
   await editor.project.saveCurrentProject();
+  sessionStorage.removeItem(PENDING_MEDIA_KEY);
 }
 
 interface EditorProviderProps { projectId: string; children: React.ReactNode; }
