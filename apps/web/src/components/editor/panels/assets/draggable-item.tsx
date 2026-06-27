@@ -15,6 +15,16 @@ import { clearDragData, setDragData } from "@/lib/drag-data";
 import type { TimelineDragData } from "@/types/drag";
 import { cn } from "@/utils/ui";
 
+// 1x1 transparent GIF dùng làm drag image rỗng (setDragImage). Hoist ra module
+// scope để tránh tạo new Image() trên MỖI render của DraggableItem — với 51 assets
+// điều đó sinh 51 object Image mỗi lần panel re-render (Issue #235).
+const EMPTY_DRAG_IMAGE = (() => {
+	const img = new window.Image();
+	img.src =
+		"data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=";
+	return img;
+})();
+
 export interface DraggableItemProps {
 	name: string;
 	preview: ReactNode;
@@ -58,9 +68,7 @@ export function DraggableItem({
 		onAddToTimeline?.({ currentTime: editor.playback.getCurrentTime() });
 	};
 
-	const emptyImg = new window.Image();
-	emptyImg.src =
-		"data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=";
+	const emptyImg = EMPTY_DRAG_IMAGE;
 
 	useEffect(() => {
 		if (!isDragging) return;
