@@ -106,6 +106,7 @@ async function importMediaPhase2(editor, projectId) {
   // Step 2: cập nhật mediaId + chuẩn hóa startTime + fix fontSize + fix audio trong TẤT CẢ scenes
   var scenes = editor.scenes.getScenes();
   var canvasHeight = editor.project.getActiveOrNull()?.settings?.canvasSize?.height || 1080;
+  var canvasWidth = editor.project.getActiveOrNull()?.settings?.canvasSize?.width || 1920;
   var platformOrigin = window.location.origin.replace('3001', '3000');
   var updatedScenes = [];
   for (var si = 0; si < scenes.length; si++) {
@@ -137,6 +138,16 @@ async function importMediaPhase2(editor, projectId) {
         // Fix fontSize: pipeline dùng pixel trực tiếp, OpenCut-AI scale theo canvasHeight/90
         if (el.type === "text" && el.fontSize) {
           patch.fontSize = el.fontSize * 90 / canvasHeight;
+        }
+
+        // Fix text position: pipeline dùng absolute coords, OpenCut-AI dùng center-relative
+        if (el.type === "text" && el.transform && el.transform.position) {
+          patch.transform = Object.assign({}, el.transform, {
+            position: {
+              x: el.transform.position.x - canvasWidth / 2,
+              y: el.transform.position.y - canvasHeight / 2,
+            },
+          });
         }
 
         // Fix audio: convert upload+mediaId → library+sourceUrl (TTS files từ Platform)

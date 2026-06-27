@@ -10,7 +10,7 @@ export class PlaybackManager {
 	private listeners = new Set<() => void>();
 	private playbackTimer: number | null = null;
 	private lastUpdate = 0;
-	private notifyFrameCounter = 0;
+	private lastNotifyMs = 0;
 	private shuttleSpeed = 0;
 	private shuttleDirection: "forward" | "reverse" | null = null;
 	private lastShuttlePress = 0;
@@ -229,10 +229,10 @@ export class PlaybackManager {
 				}),
 			);
 
-			// Throttle React re-renders: chỉ notify mỗi 6 frames (~10fps)
-			// Canvas render qua useRafLoop đọc getCurrentTime() trực tiếp nên vẫn 60fps
-			this.notifyFrameCounter++;
-			if (this.notifyFrameCounter % 6 === 0) {
+			// Throttle notify: 2 lần/giây để cập nhật playhead mà không cause heavy render
+			// (ResizablePanelGroup + 51 assets render mất ~200-500ms/lần)
+			if (now - this.lastNotifyMs >= 500) {
+				this.lastNotifyMs = now;
 				this.notify();
 			}
 		}
