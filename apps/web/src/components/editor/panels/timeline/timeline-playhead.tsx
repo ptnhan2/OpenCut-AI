@@ -56,11 +56,11 @@ export function TimelinePlayhead({
 	});
 	const leftPosition = getCenteredLineLeft({ centerPixel: centerPosition });
 
-	// Khi đang play, đè vị trí playhead qua sự kiện playback-update 60fps (imperative,
-	// bypass React) để playhead chạy mượt như CapCut. useEditor() không re-render trong
-	// khi play (xem playback-manager.ts), nên giá trị do event gán vào style.left được
-	// giữ nguyên giữa các frame. Khi pause/seek, React re-render và đồng bộ lại
-	// leftPosition từ playheadPosition hiện tại.
+	// Khi đang play, đè vị trí playhead qua sự kiện playback-update (imperative,
+	// bypass React) để playhead chạy mượt. Dùng transform: translateX (GPU-composited,
+	// không trigger layout/reflow như `left`). useEditor không re-render khi play (xem
+	// playback-manager.ts) nên transform do event gán được giữ giữa các frame. Khi
+	// pause/seek, React re-render và set inline transform trở lại từ leftPosition.
 	useEffect(() => {
 		const el = playheadRef.current;
 		if (!el) return;
@@ -68,7 +68,9 @@ export function TimelinePlayhead({
 			const time = (event as CustomEvent<{ time: number }>).detail?.time;
 			if (typeof time !== "number") return;
 			const center = timelineTimeToSnappedPixels({ time, zoomLevel });
-			el.style.left = `${getCenteredLineLeft({ centerPixel: center })}px`;
+			el.style.transform = `translateX(${getCenteredLineLeft({
+				centerPixel: center,
+			})}px)`;
 		};
 		window.addEventListener("playback-update", onTick);
 		return () => window.removeEventListener("playback-update", onTick);
@@ -101,10 +103,12 @@ export function TimelinePlayhead({
 			tabIndex={0}
 			className="pointer-events-none absolute z-5"
 			style={{
-				left: `${leftPosition}px`,
+				left: 0,
 				top: 0,
 				height: `${totalHeight}px`,
 				width: `${TIMELINE_INDICATOR_LINE_WIDTH_PX}px`,
+				transform: `translateX(${leftPosition}px)`,
+				willChange: "transform",
 			}}
 			onKeyDown={handlePlayheadKeyDown}
 		>
