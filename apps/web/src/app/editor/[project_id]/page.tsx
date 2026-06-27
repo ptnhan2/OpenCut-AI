@@ -9,7 +9,7 @@ import { EditorHeader } from "@/components/editor/editor-header";
 import { EditorProvider } from "@/components/providers/editor-provider";
 import { Onboarding } from "@/components/editor/onboarding";
 import { MigrationDialog } from "@/components/editor/dialogs/migration-dialog";
-import { usePanelStore } from "@/stores/panel-store";
+import { usePanelStore, type PanelId, type PanelSizes } from "@/stores/panel-store";
 import { usePasteMedia } from "@/hooks/use-paste-media";
 import { MobileGate } from "@/components/editor/mobile-gate";
 import { AIPanelWrapper } from "@/components/editor/ai/ai-panel-wrapper";
@@ -19,7 +19,7 @@ import { RightPanel } from "@/components/editor/panels/right-panel";
 import { useTranscriptStore } from "@/stores/transcript-store";
 import { useEditor } from "@/hooks/use-editor";
 import { useTranscribePrompt } from "@/hooks/use-transcribe-prompt";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { TextElement } from "@/types/timeline";
 import { BackgroundTasksWidget } from "@/components/editor/background-tasks";
 import { CommandPalette } from "@/components/editor/command-palette";
@@ -93,5 +93,49 @@ function EditorLayout() {
   var rr = useRef(false);
   useEffect(function() { if(rr.current)return;var s=useTranscriptStore.getState().segments;if(s.length>0)return;var tr=editor.timeline.getTracks();if(!tr.some(function(t:any){return (t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0;}))return;var tt=tr.find(function(t:any){return t.type==="text"&&t.elements.length>0;});if(!tt)return;var se=tt.elements.slice().sort(function(a:any,b:any){return a.startTime-b.startTime;});if(se.length===0)return;var sg=se.map(function(el:any,i:number){var te=el as TextElement;var tx=te.content||te.name||"";var sw=tx.trim().split(/\s+/).filter(Boolean);var sd=(el.startTime+el.duration)-el.startTime;var wd=sw.length>0?sd/sw.length:sd;return{id:i,text:tx,start:el.startTime,end:el.startTime+el.duration,words:sw.map(function(w:string,wi:number){return{word:w,start:el.startTime+wi*wd,end:el.startTime+(wi+1)*wd,confidence:0.9};})};});if(sg.length>0){rr.current=true;useTranscriptStore.getState().setSegments(sg)}},[editor]);
   useEffect(function(){return editor.timeline.subscribe(function(){var s=useTranscriptStore.getState().segments;if(s.length===0)return;if(!editor.timeline.getTracks().some(function(t:any){return (t.type==="video"||t.type==="audio"||t.type==="image")&&t.elements.length>0;}))useTranscriptStore.getState().reset();});},[editor]);
-  return (<ResizablePanelGroup direction="vertical" className="size-full gap-[0.18rem]" onLayout={function(s:any){setPanel("mainContent",s[0]||panels.mainContent);setPanel("timeline",s[1]||panels.timeline);}}><ResizablePanel defaultSize={panels.mainContent} minSize={30} maxSize={85} className="min-h-0"><ResizablePanelGroup direction="horizontal" className="size-full gap-[0.19rem] px-3" onLayout={function(s:any){setPanel("tools",s[0]||panels.tools);setPanel("preview",s[1]||panels.preview);setPanel("properties",s[2]||panels.properties);}}><ResizablePanel defaultSize={panels.tools} minSize={15} maxSize={40} className="min-w-0"><AssetsPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.preview} minSize={30} className="min-h-0 min-w-0 flex-1"><PreviewPanel /></ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize={panels.properties} minSize={15} maxSize={40} className="min-w-0">{ht||htc?<RightPanel className="size-full" />:<EmptyEditorGuide />}</ResizablePanel></ResizablePanelGroup></ResizablePanel>{ht&&<div className="flex justify-center px-3 py-1"><QuickActionsBar /></div>}<ResizableHandle withHandle /><ResizablePanel defaultSize={panels.timeline} minSize={15} maxSize={70} className="min-h-0 px-3 pb-3"><Timeline /></ResizablePanel></ResizablePanelGroup>);
+  return (
+    <PanelTree
+      panels={panels}
+      setPanel={setPanel}
+      showRightPanel={ht || htc}
+      showQuickActions={ht}
+    />
+  );
 }
+
+interface PanelTreeProps {
+  panels: PanelSizes;
+  setPanel: (panel: PanelId, size: number) => void;
+  showRightPanel: boolean;
+  showQuickActions: boolean;
+}
+
+/**
+ * Cây panel (ResizablePanelGroup) tách ra và bọc React.memo để KHÔNG re-render khi
+ * EditorLayout re-render do playback/media notify. Props (panels, setPanel, 2 bool)
+ * chỉ đổi khi resize hoặc track/transcript thay đổi — không đổi khi playback time đổi
+ * → react-resizable-panels không đo lại layout mỗi notify (fix UI lag ~1s, Issue #235).
+ */
+const PanelTree = memo(function PanelTree({
+  panels,
+  setPanel,
+  showRightPanel,
+  showQuickActions,
+}: PanelTreeProps) {
+  return (
+    <ResizablePanelGroup direction="vertical" className="size-full gap-[0.18rem]" onLayout={(sizes) => { setPanel("mainContent", sizes[0] || panels.mainContent); setPanel("timeline", sizes[1] || panels.timeline); }}>
+      <ResizablePanel defaultSize={panels.mainContent} minSize={30} maxSize={85} className="min-h-0">
+        <ResizablePanelGroup direction="horizontal" className="size-full gap-[0.19rem] px-3" onLayout={(sizes) => { setPanel("tools", sizes[0] || panels.tools); setPanel("preview", sizes[1] || panels.preview); setPanel("properties", sizes[2] || panels.properties); }}>
+          <ResizablePanel defaultSize={panels.tools} minSize={15} maxSize={40} className="min-w-0"><AssetsPanel /></ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize={panels.preview} minSize={30} className="min-h-0 min-w-0 flex-1"><PreviewPanel /></ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize={panels.properties} minSize={15} maxSize={40} className="min-w-0">{showRightPanel?<RightPanel className="size-full" />:<EmptyEditorGuide />}</ResizablePanel>
+        </ResizablePanelGroup>
+      </ResizablePanel>
+      {showQuickActions&&<div className="flex justify-center px-3 py-1"><QuickActionsBar /></div>}
+      <ResizableHandle withHandle />
+      <ResizablePanel defaultSize={panels.timeline} minSize={15} maxSize={70} className="min-h-0 px-3 pb-3"><Timeline /></ResizablePanel>
+    </ResizablePanelGroup>
+  );
+});
