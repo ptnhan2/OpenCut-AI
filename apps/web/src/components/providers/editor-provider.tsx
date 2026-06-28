@@ -17,6 +17,41 @@ function genPNGBlob(r, g, b) {
   return new Promise(function(resolve) { c.toBlob(resolve, 'image/png'); });
 }
 
+/**
+ * Encode AudioBuffer thành WAV 16-bit PCM. WAV decode không tốn CPU (không
+ * giải nén) → phát mượt, khắc phục ngắt quãng do mediabunny decode MP3
+ * trên main thread (#236).
+ *
+ * @param audioBuffer - Web Audio API decoded AudioBuffer (1+ channels, any sample rate).
+ * @returns ArrayBuffer chứa WAV 16-bit PCM sẵn sàng tạo File/Blob.
+ */
+function audioBufferToWav(audioBuffer) {
+  var numChannels = audioBuffer.numberOfChannels;
+  var sampleRate = audioBuffer.sampleRate;
+  var data = audioBuffer.getChannelData(0); // mono — lấy kênh đầu
+  var bitsPerSample = 16;
+  var byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  var blockAlign = numChannels * (bitsPerSample / 8);
+  var dataLength = data.length * (bitsPerSample / 8);
+  var wav = new ArrayBuffer(44 + dataLength);
+  var v = new DataView(wav);
+  function ws(off, str) { for (var i = 0; i < str.length; i++) v.setUint8(off + i, str.charCodeAt(i)); }
+  // RIFF header
+  ws(0, 'RIFF'); v.setUint32(4, 36 + dataLength, true); ws(8, 'WAVE');
+  // fmt chunk
+  ws(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, numChannels, true); v.setUint32(24, sampleRate, true);
+  v.setUint32(28, byteRate, true); v.setUint16(32, blockAlign, true);
+  v.setUint16(34, bitsPerSample, true);
+  // data chunk
+  ws(36, 'data'); v.setUint32(40, dataLength, true);
+  for (var i = 0, off = 44; i < data.length; i++, off += 2) {
+    var s = Math.max(-1, Math.min(1, data[i]));
+    v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return wav;
+}
+
 async function importProjectPhase1(json) {
   var projectId = json.metadata.id;
   var COLORS = [[26,26,46],[22,33,62],[15,52,96],[83,52,131],[45,106,79],[127,79,36],[88,47,14],[147,102,57]];
@@ -147,16 +182,31 @@ export async function importMediaPhase2(editor, projectId) {
     }
   }
   var audioOldIds = Object.keys(seenAudio);
+  // Dùng 1 AudioContext cho tất cả file → decode MP3 off-main-thread.
+  var decodeCtx = new AudioContext();
   for (var ai = 0; ai < audioOldIds.length; ai++) {
     var oldMid = audioOldIds[ai];
     var audioId = oldMid.replace("media-tts-", "");
     try {
       var aResp = await fetch(apiBase + "/api/assets/tts/" + audioId);
       if (aResp.ok) {
-        var aBlob = await aResp.blob();
+          var aBlob = await aResp.blob();
         if (aBlob && aBlob.size > 0) {
-          var aFile = new File([aBlob], audioId + ".mp3", { type: "audio/mpeg" });
-          var aUrl = URL.createObjectURL(aFile);
+          // Decode MP3 → WAV (16-bit PCM) để phát mượt. WAV decode
+          // không tốn CPU (không giải nén), tránh mediabunny main-thread
+          // stall khi decode MP3 từng chunk (#236).
+          var aFile;
+          var aUrl;
+          try {
+            var rawBuf = await aBlob.arrayBuffer();
+            var audioBuf = await decodeCtx.decodeAudioData(rawBuf);
+            var wavBuf = audioBufferToWav(audioBuf);
+            aFile = new File([wavBuf], audioId + ".wav", { type: "audio/wav" });
+          } catch (_decodeErr) {
+            // fallback: giữ MP3 gốc (decode fail trên 1 vài file không chặn cả batch)
+            aFile = new File([aBlob], audioId + ".mp3", { type: "audio/mpeg" });
+          }
+          aUrl = URL.createObjectURL(aFile);
           var newAudioId = await editor.media.addMediaAsset({
             projectId: projectId,
             asset: {
@@ -175,6 +225,7 @@ export async function importMediaPhase2(editor, projectId) {
       // graceful: id bỏ qua khỏi map → Step 2 fallback giữ Platform sourceUrl.
     }
   }
+  decodeCtx.close();
 
   var updatedScenes = [];
   for (var si = 0; si < scenes.length; si++) {
