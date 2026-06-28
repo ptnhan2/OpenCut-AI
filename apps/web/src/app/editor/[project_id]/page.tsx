@@ -25,26 +25,21 @@ import { BackgroundTasksWidget } from "@/components/editor/background-tasks";
 import { CommandPalette } from "@/components/editor/command-palette";
 
 const PENDING_IMPORT_KEY = "opencut:pending-import";
-const PLATFORM = "http://localhost:3000";
 
+/**
+ * Tuần tự tiền xử lý JSON pipeline trước khi lưu vào localStorage lúc import.
+ *
+ * Trước đây hàm này chuyển audio `media-tts-*` sang `sourceType:"library"` +
+ * `sourceUrl` Platform và xoá `mediaId`. Kể từ Issue #236, audio được giữ nguyên
+ * `mediaId` để `importMediaPhase2` (editor-provider.tsx) fetch + store local qua
+ * API, giúp OpenCut-AI không còn phụ thuộc Platform runtime để có file audio.
+ * Hàm hiện là passthrough, giữ lại làm điểm móc cho các bước xử lý sau.
+ *
+ * @param json - Raw v10 pipeline project JSON (mutated in place, then returned).
+ * @returns The same json object (passthrough; audio ingestion deferred to phase 2).
+ * @sideEffect None — pure passthrough as of #236.
+ */
 function postProcessProject(json: Record<string, unknown>): Record<string, unknown> {
-  var scenes = json.scenes as Array<Record<string, unknown>>;
-  for (var si = 0; si < scenes.length; si++) {
-    var tracks = (scenes[si] as any).tracks as Array<Record<string, unknown>>;
-    for (var ti = 0; ti < tracks.length; ti++) {
-      var t = tracks[ti];
-      if (t.type !== "audio") continue;
-      var els = (t as any).elements as Array<Record<string, unknown>>;
-      for (var ei = 0; ei < els.length; ei++) {
-        var mid = (els[ei] as any).mediaId || "";
-        if (mid.indexOf("media-tts-") === 0) {
-          (els[ei] as any).sourceType = "library";
-          (els[ei] as any).sourceUrl = PLATFORM + "/assets/audio/tts/" + mid.replace("media-tts-", "") + ".mp3";
-          delete (els[ei] as any).mediaId;
-        }
-      }
-    }
-  }
   return json;
 }
 
