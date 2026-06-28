@@ -519,16 +519,6 @@ export class AudioManager {
 		this.trackNodes.clear();
 	}
 
-	/**
-	 * Tạo audio sink cho một clip. Với file WAV: decode toàn bộ thành 1 AudioBuffer
-	 * duy nhất → schedule 1 AudioBufferSourceNode thay vì iterate từng chunk qua
-	 * mediabunny. Eliminates audio gaps do main-thread stall giữa các buffer chunk (#236).
-	 * Với MP3 / other: dùng mediabunny chunked decode (fallback).
-	 *
-	 * @param clip - AudioClipSource containing the File to decode.
-	 * @returns AudioBufferSink (mediabunny or pre-decoded single-buffer), or null on failure.
-	 * @sideEffect Caches sink + Input in maps; may call AudioContext.decodeAudioData.
-	 */
 	private async getAudioSink({
 		clip,
 	}: {
@@ -537,28 +527,6 @@ export class AudioManager {
 		const existingSink = this.sinks.get(clip.sourceKey);
 		if (existingSink) return existingSink;
 
-		// WAV: pre-decode toàn bộ file → 1 buffer → 1 AudioBufferSourceNode.
-		// Không có per-chunk yield → không gap khi main thread bận (#236).
-		if (clip.file.type === "audio/wav" || clip.file.name.endsWith(".wav")) {
-			try {
-				const ctx = this.ensureAudioContext();
-				if (ctx) {
-					const arrayBuf = await clip.file.arrayBuffer();
-					const audioBuf = await ctx.decodeAudioData(arrayBuf);
-					const sink = {
-						buffers: async function* (startTime: number): AsyncGenerator<WrappedAudioBuffer> {
-							yield { buffer: audioBuf, timestamp: startTime };
-						},
-					} as unknown as AudioBufferSink;
-					this.sinks.set(clip.sourceKey, sink);
-					return sink;
-				}
-			} catch (error) {
-				console.warn("WAV pre-decode failed, falling back to mediabunny:", error);
-			}
-		}
-
-		// MP3 / other: mediabunny chunked decode (original path).
 		try {
 			const input = new Input({
 				source: new BlobSource(clip.file),
