@@ -124,9 +124,58 @@ export async function importMediaPhase2(editor, projectId) {
   var cs = editor.project.getActiveOrNull()?.settings?.canvasSize;
   var canvasHeight = cs?.height || 1080;
   var canvasWidth = cs?.width || 1920;
-  var u = new URL(window.location.origin);
-  u.port = '3000';
-  var platformOrigin = u.origin;
+  // API base: Platform (Auto_Video_Editor) backend serving TTS audio (#236).
+  // Default http://localhost:3000; override via NEXT_PUBLIC_API_BASE for deploy.
+  var apiBase = (process.env.NEXT_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+
+  // Step 1.5: fetch TTS audio qua API, store local qua addMediaAsset (giống ảnh).
+  // Xây audioIdMap (old "media-tts-<id>" → new local mediaId). Nếu fetch fail cho
+  // 1 id → id bị bỏ qua, element đó về fallback library+sourceUrl ở Step 2.
+  var audioIdMap: Record<string, string> = {};
+  var seenAudio: Record<string, boolean> = {};
+  for (var a0 = 0; a0 < scenes.length; a0++) {
+    var asc = scenes[a0];
+    var ascTracks = (asc && (asc as any).tracks) || [];
+    for (var at = 0; at < ascTracks.length; at++) {
+      var ascEls = (ascTracks[at] && (ascTracks[at] as any).elements) || [];
+      for (var ae = 0; ae < ascEls.length; ae++) {
+        var ael = ascEls[ae];
+        if (ael && ael.type === "audio" && ael.sourceType === "upload" && ael.mediaId && String(ael.mediaId).indexOf("media-tts-") === 0) {
+          seenAudio[String(ael.mediaId)] = true;
+        }
+      }
+    }
+  }
+  var audioOldIds = Object.keys(seenAudio);
+  for (var ai = 0; ai < audioOldIds.length; ai++) {
+    var oldMid = audioOldIds[ai];
+    var audioId = oldMid.replace("media-tts-", "");
+    try {
+      var aResp = await fetch(apiBase + "/api/assets/tts/" + audioId);
+      if (aResp.ok) {
+        var aBlob = await aResp.blob();
+        if (aBlob && aBlob.size > 0) {
+          var aFile = new File([aBlob], audioId + ".mp3", { type: "audio/mpeg" });
+          var aUrl = URL.createObjectURL(aFile);
+          var newAudioId = await editor.media.addMediaAsset({
+            projectId: projectId,
+            asset: {
+              name: "TTS " + audioId,
+              type: "audio",
+              file: aFile,
+              url: aUrl,
+              label: "TTS " + audioId,
+            },
+          });
+          audioIdMap[oldMid] = newAudioId;
+          // KHÔNG revoke aUrl — playback đọc từ nó / OPFS.
+        }
+      }
+    } catch (_audioFetchErr) {
+      // graceful: id bỏ qua khỏi map → Step 2 fallback giữ Platform sourceUrl.
+    }
+  }
+
   var updatedScenes = [];
   for (var si = 0; si < scenes.length; si++) {
     var scene = scenes[si];
@@ -163,13 +212,23 @@ export async function importMediaPhase2(editor, projectId) {
             },
           });
         }
-        if (el.type === "audio" && el.sourceType === "upload" && el.mediaId && el.mediaId.indexOf("media-tts-") === 0) {
-          var audioId = el.mediaId.replace("media-tts-", "");
-          patch.sourceType = "library";
-          patch.sourceUrl = platformOrigin + "/assets/audio/tts/" + audioId + ".mp3";
+        if (el.type === "audio" && el.sourceType === "upload" && el.mediaId && String(el.mediaId).indexOf("media-tts-") === 0) {
+          if (audioIdMap[String(el.mediaId)]) {
+            // Đã store local → upload + local mediaId, bỏ sourceUrl Platform.
+            patch.sourceType = "upload";
+            patch.mediaId = audioIdMap[String(el.mediaId)];
+          } else {
+            // Fallback: fetch fail → giữ library + Platform sourceUrl (cần Platform runtime).
+            patch.sourceType = "library";
+            patch.sourceUrl = apiBase + "/assets/audio/tts/" + String(el.mediaId).replace("media-tts-", "") + ".mp3";
+          }
         }
 
-        newEls.push(Object.assign({}, el, patch));
+        var merged = Object.assign({}, el, patch);
+        if (el.type === "audio" && el.sourceType === "upload" && el.mediaId && audioIdMap[String(el.mediaId)]) {
+          delete (merged as any).sourceUrl;
+        }
+        newEls.push(merged);
       }
       newTracks.push(Object.assign({}, track, { elements: newEls }));
     }
