@@ -47,15 +47,28 @@ export function TextEditingPanel({ className }: { className?: string }) {
 	const [activeTab, setActiveTab] = useState("original");
 	const [isDetectingSpeakers, setIsDetectingSpeakers] = useState(false);
 
-	// Continuously track playback time so word/segment highlighting updates live
+	// Continuously track playback time so word/segment highlighting updates live.
+	// CHỈ re-render khi active segment thay đổi (Issue #237): setState mỗi frame
+	// (60fps) re-render toàn bộ TranscriptionPanel + chạy React dev-mode
+	// instrumentation → 237ms/frame → main thread block → playhead giật. Highlight
+	// chỉ cần cập nhật ở ranh giới segment (~2-4Hz), nên đọc store non-reactive +
+	// setState chỉ khi active segment id đổi.
 	const [currentTime, setCurrentTime] = useState(0);
 	const rafRef = useRef<number>(0);
 
 	useEffect(() => {
 		let running = true;
+		let lastActiveSegmentId: string | null = null;
 		const tick = () => {
 			if (!running) return;
-			setCurrentTime(editor.playback.getCurrentTime());
+			const time = editor.playback.getCurrentTime();
+			const segments = useTranscriptStore.getState().segments;
+			const activeSegment = segments.find((s) => time >= s.start && time < s.end);
+			const activeId = activeSegment ? String(activeSegment.id) : null;
+			if (activeId !== lastActiveSegmentId) {
+				lastActiveSegmentId = activeId;
+				setCurrentTime(time);
+			}
 			rafRef.current = requestAnimationFrame(tick);
 		};
 		rafRef.current = requestAnimationFrame(tick);

@@ -5,6 +5,12 @@ import VERTEX_SHADER_SOURCE from "@/lib/transitions/transition.vert.glsl";
 let gl: WebGLRenderingContext | null = null;
 let transitionCanvas: HTMLCanvasElement | OffscreenCanvas | null = null;
 
+// Cache program theo fragment shader source (Issue #237): trước đây compile
+// vert+frag shader + link program MỖI frame trong cửa sổ transition (10-100ms/frame)
+// → render chậm → preview đơ (renderingRef stuck) → visual lag. Compile 1 lần/
+// shader, reuse.
+const programCache = new Map<string, WebGLProgram>();
+
 function getOrCreateContext(
 	width: number,
 	height: number,
@@ -20,6 +26,8 @@ function getOrCreateContext(
 		}) as WebGLRenderingContext | null;
 		if (!ctx) throw new Error("WebGL not supported for transitions");
 		gl = ctx;
+		// Reset program cache khi context đổi (program cũ không hợp lệ)
+		programCache.clear();
 	}
 	return gl!;
 }
@@ -41,22 +49,12 @@ function compileShader(
 	return shader;
 }
 
-export function renderTransition({
-	sourceA,
-	sourceB,
-	width,
-	height,
-	progress,
-	fragmentShader,
-}: {
-	sourceA: CanvasImageSource;
-	sourceB: CanvasImageSource;
-	width: number;
-	height: number;
-	progress: number;
-	fragmentShader: string;
-}): HTMLCanvasElement | OffscreenCanvas {
-	const context = getOrCreateContext(width, height);
+function getOrCreateProgram(
+	context: WebGLRenderingContext,
+	fragmentShader: string,
+): WebGLProgram {
+	const cached = programCache.get(fragmentShader);
+	if (cached) return cached;
 
 	const vertShader = compileShader(
 		context,
@@ -78,10 +76,36 @@ export function renderTransition({
 	if (!context.getProgramParameter(program, context.LINK_STATUS)) {
 		const info = context.getProgramInfoLog(program);
 		context.deleteProgram(program);
+		context.deleteShader(vertShader);
+		context.deleteShader(fragShader);
 		throw new Error(`Transition program link failed: ${info}`);
 	}
 	context.deleteShader(vertShader);
 	context.deleteShader(fragShader);
+
+	programCache.set(fragmentShader, program);
+	return program;
+}
+
+export function renderTransition({
+	sourceA,
+	sourceB,
+	width,
+	height,
+	progress,
+	fragmentShader,
+}: {
+	sourceA: CanvasImageSource;
+	sourceB: CanvasImageSource;
+	width: number;
+	height: number;
+	progress: number;
+	fragmentShader: string;
+}): HTMLCanvasElement | OffscreenCanvas {
+	const context = getOrCreateContext(width, height);
+
+	// Reuse program (compile 1 lần/shader) thay vì compile mỗi frame
+	const program = getOrCreateProgram(context, fragmentShader);
 
 	const textureA = createTexture({ context, source: sourceA });
 	const textureB = createTexture({ context, source: sourceB });

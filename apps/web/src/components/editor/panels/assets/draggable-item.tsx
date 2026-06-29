@@ -18,7 +18,10 @@ import { cn } from "@/utils/ui";
 // 1x1 transparent GIF dùng làm drag image rỗng (setDragImage). Hoist ra module
 // scope để tránh tạo new Image() trên MỖI render của DraggableItem — với 51 assets
 // điều đó sinh 51 object Image mỗi lần panel re-render (Issue #235).
-const EMPTY_DRAG_IMAGE = (() => {
+// Guard typeof window: "use client" vẫn bị Next.js SSR → module eval trên server
+// → window undefined → crash 500 (Issue #237).
+const EMPTY_DRAG_IMAGE: HTMLImageElement | null = (() => {
+	if (typeof window === "undefined") return null;
 	const img = new window.Image();
 	img.src =
 		"data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=";
@@ -85,7 +88,9 @@ export function DraggableItem({
 	}, [isDragging]);
 
 	const handleDragStart = (e: React.DragEvent) => {
-		e.dataTransfer.setDragImage(emptyImg, 0, 0);
+		if (emptyImg) {
+			e.dataTransfer.setDragImage(emptyImg, 0, 0);
+		}
 
 		setDragData({ dataTransfer: e.dataTransfer, dragData });
 		e.dataTransfer.effectAllowed = "copy";
