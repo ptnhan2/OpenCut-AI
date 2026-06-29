@@ -133,6 +133,45 @@ export type TextNodeParams = TextElement & {
 };
 
 export class TextNode extends BaseNode<TextNodeParams> {
+	// Cache wrapping + line metrics (Issue #237): wrapTextLines + measureText chạy
+	// MỖI frame nhưng text content/font/width không đổi/frame (chỉ position/opacity/
+	// highlight đổi). Cache theo key để bỏ measureText per-frame (đắt) — fillText
+	// vẫn chạy (karaoke highlight đổi), nhưng không kèm measureText.
+	private _wrapCache: {
+		key: string;
+		lines: string[];
+		lineMetrics: TextMetrics[];
+	} | null = null;
+
+	private getWrappedLines({
+		ctx,
+		fontString,
+		letterSpacing,
+		rawLines,
+		maxTextWidth,
+	}: {
+		ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+		fontString: string;
+		letterSpacing: number;
+		rawLines: string[];
+		maxTextWidth: number;
+	}): { lines: string[]; lineMetrics: TextMetrics[] } {
+		const key = `${fontString}|${letterSpacing}|${maxTextWidth}|${rawLines.join("\n")}`;
+		if (this._wrapCache && this._wrapCache.key === key) {
+			return this._wrapCache;
+		}
+		ctx.save();
+		ctx.font = fontString;
+		if ("letterSpacing" in ctx) {
+			(ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${letterSpacing}px`;
+		}
+		const lines = wrapTextLines({ lines: rawLines, ctx, maxWidth: maxTextWidth });
+		const lineMetrics = lines.map((line) => ctx.measureText(line));
+		ctx.restore();
+		this._wrapCache = { key, lines, lineMetrics };
+		return this._wrapCache;
+	}
+
 	private drawKaraokeText({
 		ctx,
 		line,
@@ -266,23 +305,15 @@ export class TextNode extends BaseNode<TextNodeParams> {
 				: "source-over"
 		) as GlobalCompositeOperation;
 
-	renderer.context.save();
-		renderer.context.font = fontString;
-		renderer.context.textBaseline = baseline;
-		if ("letterSpacing" in renderer.context) {
-			(renderer.context as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${letterSpacing}px`;
-		}
-
-		// Word-wrap lines that overflow the canvas width
+	// Word-wrap lines that overflow the canvas width (cached — không re-wrap mỗi frame)
 		const maxTextWidth = renderer.width * (1 - SUBTITLE_WRAP_PADDING_RATIO * 2);
-		const lines = wrapTextLines({
-			lines: rawLines,
+		const { lines, lineMetrics } = this.getWrappedLines({
 			ctx: renderer.context,
-			maxWidth: maxTextWidth,
+			fontString,
+			letterSpacing,
+			rawLines,
+			maxTextWidth,
 		});
-
-		const lineMetrics = lines.map((line) => renderer.context.measureText(line));
-		renderer.context.restore();
 
 		const lineCount = lines.length;
 		const block = measureTextBlock({ lineMetrics, lineHeightPx, fallbackFontSize: scaledFontSize });
