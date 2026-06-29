@@ -273,7 +273,12 @@ export class AudioManager {
 		await this.ensureClipsDecoded();
 		if (!this.editor.playback.getIsPlaying()) return;
 
-		this.playbackStartTime = time;
+		// Re-read playhead THỰC TẾ: playback timer (playhead) đã advance trong khi
+		// ensureClipsDecoded chạy (decode mất ~0.5s). Nếu dùng `time` (vị trí seek
+		// cũ lúc play()), audio sẽ schedule trễ → playhead chạy trước audio (sync
+		// bug Issue #237). Dùng getCurrentTime() (vị trí playhead hiện tại) để audio
+		// khớp với playhead; scheduleClip tính when = ctxTime + (clipStart - playStart).
+		this.playbackStartTime = this.editor.playback.getCurrentTime();
 		this.playbackStartContextTime = audioContext.currentTime;
 
 		this.scheduleUpcomingClips();

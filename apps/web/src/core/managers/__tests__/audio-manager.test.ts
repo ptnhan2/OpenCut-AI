@@ -74,6 +74,14 @@ function fakeAudioBuffer(duration: number): AudioBuffer {
 // Mỗi instance tự push vào createdContexts để test đọc được decode/start calls.
 const createdContexts: FakeAudioContext[] = [];
 
+// State mô phỏng playhead advance trong lúc decode (sync fix test, Issue #237):
+// playback timer chạy trong ~0.5s decode → playhead advance. Hook advanceTime
+// được decodeAudioData gọi trước khi resolve để fake điều này.
+const audioTestState: {
+	decodeAdvance: number;
+	advanceTime: ((delta: number) => void) | null;
+} = { decodeAdvance: 0, advanceTime: null };
+
 class FakeAudioContext {
 	currentTime = 0;
 	state: AudioContextState = "running";
@@ -98,6 +106,10 @@ class FakeAudioContext {
 		fakeAudioBuffer(length / 44100);
 	decodeAudioData = async (_ab: ArrayBuffer): Promise<AudioBuffer> => {
 		this.decodeAudioDataCalls++;
+		// Mô phỏng playhead advance trong lúc decode (sync fix test)
+		if (audioTestState.decodeAdvance > 0 && audioTestState.advanceTime) {
+			audioTestState.advanceTime(audioTestState.decodeAdvance);
+		}
 		return fakeAudioBuffer(5);
 	};
 	resume = async (): Promise<void> => {
@@ -231,6 +243,10 @@ beforeEach(() => {
 	tracks = [];
 	assets = [];
 	createdContexts.length = 0;
+	audioTestState.decodeAdvance = 0;
+	audioTestState.advanceTime = (delta: number) => {
+		currentTime += delta;
+	};
 
 	savedWindow = g.window;
 	savedAudioContext = g.AudioContext;
@@ -440,5 +456,33 @@ describe("AudioManager — native decodeAudioData + single AudioBufferSourceNode
 		await flush();
 
 		expect(ctx.closed).toBe(true);
+	});
+
+	test("sync fix: audio schedule theo playhead THỰC TẾ sau decode, không dùng time cũ", async () => {
+		makeAudioClip({
+			elementId: "el-1",
+			mediaId: "asset-1",
+			startTime: 0,
+			duration: 5,
+			trimStart: 0.5,
+		});
+		currentTime = 0;
+		// Mô phỏng playback timer advance 0.5s trong lúc ensureClipsDecoded chạy.
+		// Không có sync fix, playbackStartTime = time(0) cũ → audio schedule ở
+		// timeline 0 trong khi playhead ở 0.5 → playhead chạy trước audio (bug).
+		audioTestState.decodeAdvance = 0.5;
+		const editor = buildEditor();
+		new AudioManager(editor as unknown as EditorCore);
+
+		await triggerPlay();
+		const ctx = createdContexts[0];
+
+		const started = ctx.sources.filter((s) => s.started !== null);
+		expect(started.length).toBe(1);
+		// Sync fix: playbackStartTime = getCurrentTime() = 0.5 (sau decode).
+		// when = ctxStart(0) + (clipStart(0) - playStart(0.5)) = -0.5 → late-start.
+		// lateBy = 0 - (-0.5) = 0.5 → offset = trimStart(0.5)+0.5 = 1.0, duration = 4.5.
+		// → audio chơi từ 1.0s của source, khớp playhead ở 0.5s timeline (sync ✅).
+		expect(started[0].started).toEqual({ when: 0, offset: 1.0, duration: 4.5 });
 	});
 });
