@@ -32,13 +32,16 @@ export default function RootLayout({
 				<BotIdClient protect={protectedRoutes} />
 				<JsonLd />
 				<GoogleAnalytics />
-				{process.env.NODE_ENV === "development" && (
+				{/* react-scan (auto.global.js) ĐÃ BỎ — nó set các timer profiling React
+				    nặng (~410ms/fire) block main thread → playhead giật + audio ngắt
+				    trong dev mode (Issue #237). Khi cần profile lại, tạm uncomment. */}
+				{/* {process.env.NODE_ENV === "development" && (
 					<Script
 						src="//unpkg.com/react-scan/dist/auto.global.js"
 						crossOrigin="anonymous"
 						strategy="beforeInteractive"
 					/>
-				)}
+				)} */}
 			</head>
 			<body className={`${siteFont.className} font-sans antialiased`} suppressHydrationWarning>
 				<ThemeProvider
