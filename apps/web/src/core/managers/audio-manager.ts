@@ -1,13 +1,6 @@
 import type { EditorCore } from "@/core";
 import type { AudioClipSource } from "@/lib/media/audio";
 import { createAudioContext, collectAudioClips } from "@/lib/media/audio";
-import {
-	ALL_FORMATS,
-	AudioBufferSink,
-	BlobSource,
-	Input,
-	type WrappedAudioBuffer,
-} from "mediabunny";
 
 export class AudioManager {
 	private audioContext: AudioContext | null = null;
@@ -27,18 +20,12 @@ export class AudioManager {
 	private lookaheadSeconds = 2;
 	private scheduleIntervalMs = 500;
 	private clips: AudioClipSource[] = [];
-	private sinks = new Map<string, AudioBufferSink>();
-	private inputs = new Map<string, Input>();
 	private activeClipIds = new Set<string>();
-	private clipIterators = new Map<
-		string,
-		AsyncGenerator<WrappedAudioBuffer, void, unknown>
-	>();
-	private queuedSources = new Set<AudioBufferSourceNode>();
+	private clipBuffers = new Map<string, AudioBuffer>();
+	private activeSources = new Set<AudioBufferSourceNode>();
 	private playbackSessionId = 0;
 	private lastIsPlaying = false;
 	private lastVolume = 1;
-	private playbackLatencyCompensationSeconds = 0;
 	private unsubscribers: Array<() => void> = [];
 
 	constructor(private editor: EditorCore) {
@@ -110,7 +97,7 @@ export class AudioManager {
 	};
 
 	private handleTimelineChange = (): void => {
-		this.disposeSinks();
+		void this.ensureClipsDecoded();
 
 		if (!this.editor.playback.getIsPlaying()) return;
 
@@ -272,10 +259,7 @@ export class AudioManager {
 		this.stopPlayback();
 		this.rebuildTrackNodes();
 		this.playbackSessionId++;
-		this.playbackLatencyCompensationSeconds = 0;
 
-		const tracks = this.editor.timeline.getTracks();
-		const mediaAssets = this.editor.media.getAssets();
 		const duration = this.editor.timeline.getTotalDuration();
 
 		if (duration <= 0) return;
@@ -284,7 +268,9 @@ export class AudioManager {
 			await audioContext.resume();
 		}
 
-		this.clips = await collectAudioClips({ tracks, mediaAssets });
+		// Eager pre-decode: decode toàn bộ clip off-main-thread TRƯỚC khi schedule
+		// (Issue #237 — chuẩn industry). Cache persistent → seek/replay instant.
+		await this.ensureClipsDecoded();
 		if (!this.editor.playback.getIsPlaying()) return;
 
 		this.playbackStartTime = time;
@@ -314,9 +300,8 @@ export class AudioManager {
 			if (clip.startTime > windowEnd) continue;
 
 			this.activeClipIds.add(clip.id);
-			void this.runClipIterator({
+			void this.scheduleClip({
 				clip,
-				startTime: currentTime,
 				sessionId: this.playbackSessionId,
 			});
 		}
@@ -328,186 +313,151 @@ export class AudioManager {
 		}
 		this.scheduleTimer = null;
 
-		for (const iterator of this.clipIterators.values()) {
-			void iterator.return();
-		}
-		this.clipIterators.clear();
-		this.activeClipIds.clear();
-
-		for (const source of this.queuedSources) {
+		for (const source of this.activeSources) {
 			try {
 				source.stop();
 			} catch {}
 			source.disconnect();
 		}
-		this.queuedSources.clear();
+		this.activeSources.clear();
+		this.activeClipIds.clear();
+		// KHÔNG clear clipBuffers — cache persistent cho seek/replay (Issue #237).
 	}
 
-	private async runClipIterator({
+	/**
+	 * Eager decode toàn bộ clip hiện tại sang AudioBuffer (off-main-thread native).
+	 * Pre-process TRƯỚC khi play + khi timeline/media thay đổi — chuẩn industry
+	 * (Issue #237). Cache persistent theo sourceKey → seek/replay instant.
+	 *
+	 * @sideEffect Gán this.clips, populate this.clipBuffers (decode off-main-thread).
+	 */
+	private async ensureClipsDecoded(): Promise<void> {
+		const tracks = this.editor.timeline.getTracks();
+		const mediaAssets = this.editor.media.getAssets();
+		this.clips = await collectAudioClips({ tracks, mediaAssets });
+		await Promise.all(
+			this.clips.map((clip) => this.decodeClipBuffer({ clip })),
+		);
+	}
+
+	/**
+	 * Decode toàn bộ 1 clip thành AudioBuffer bằng native decodeAudioData (off-main-
+	 * thread), cache theo sourceKey. Thay thế mediabunny AudioBufferSink streaming
+	 * (chunk loop trên main thread — thủ phạm block RAF, Issue #237).
+	 *
+	 * @param clip - Audio clip source (file đã resolve: upload local hoặc library fetch).
+	 * @returns Decoded AudioBuffer, hoặc null nếu decode fail. Trả cache nếu đã decode.
+	 * @sideEffect Ghi this.clipBuffers[sourceKey] khi decode lần đầu.
+	 */
+	private async decodeClipBuffer({
 		clip,
-		startTime,
+	}: {
+		clip: AudioClipSource;
+	}): Promise<AudioBuffer | null> {
+		const cached = this.clipBuffers.get(clip.sourceKey);
+		if (cached) return cached;
+
+		const audioContext = this.ensureAudioContext();
+		if (!audioContext) return null;
+
+		try {
+			const arrayBuffer = await clip.file.arrayBuffer();
+			const buffer = await audioContext.decodeAudioData(arrayBuffer);
+			this.clipBuffers.set(clip.sourceKey, buffer);
+			return buffer;
+		} catch (error) {
+			console.warn("decodeClipBuffer failed:", clip.sourceKey, error);
+			return null;
+		}
+	}
+
+	/**
+	 * Schedule 1 AudioBufferSourceNode/clip với absolute Web Audio clock
+	 * (node.start(when, offset, duration)) — sample-accurate, chạy trên audio thread.
+	 * Thay thế runClipIterator (for-await chunk loop + per-chunk node creation trên
+	 * main thread — Issue #237). Xử lý seek-into-middle (late-start) bằng offset.
+	 *
+	 * @param clip - Audio clip cần schedule.
+	 * @param sessionId - Playback session id (bỏ qua nếu session đã đổi).
+	 * @sideEffect Tạo + connect AudioBufferSourceNode, add vào this.activeSources.
+	 */
+	private async scheduleClip({
+		clip,
 		sessionId,
 	}: {
 		clip: AudioClipSource;
-		startTime: number;
 		sessionId: number;
 	}): Promise<void> {
 		const audioContext = this.ensureAudioContext();
 		if (!audioContext) return;
-
-		const sink = await this.getAudioSink({ clip });
-		if (!sink || !this.editor.playback.getIsPlaying()) return;
 		if (sessionId !== this.playbackSessionId) return;
 
-		const clipStart = clip.startTime;
-		const clipEnd = clip.startTime + clip.duration;
-		const playbackTimeAfterSinkReady = this.getPlaybackTime();
-		const iteratorStartTime = Math.max(
-			startTime,
-			clipStart,
-			playbackTimeAfterSinkReady,
-		);
-		if (iteratorStartTime >= clipEnd) {
-			return;
+		const buffer = await this.decodeClipBuffer({ clip });
+		if (!buffer) return;
+		if (!this.editor.playback.getIsPlaying()) return;
+		if (sessionId !== this.playbackSessionId) return;
+
+		const node = audioContext.createBufferSource();
+		node.buffer = buffer;
+
+		// Apply per-clip playback rate (speed control)
+		const clipRate = (clip as unknown as { playbackRate?: number }).playbackRate;
+		if (typeof clipRate === "number" && clipRate !== 1.0) {
+			node.playbackRate.value = clipRate;
 		}
-		const sourceStartTime =
-			clip.trimStart + (iteratorStartTime - clip.startTime);
 
-		let iterator: AsyncGenerator<WrappedAudioBuffer, void, unknown>;
-		try {
-			iterator = sink.buffers(sourceStartTime);
-		} catch {
-			return; // Sink may have been disposed
+		const destinationNode = this.getTrackDestination(clip.id);
+
+		const clipVolume = clip.volume ?? 1;
+		if (clipVolume < 1) {
+			const clipGain = audioContext.createGain();
+			clipGain.gain.value = clipVolume;
+			node.connect(clipGain);
+			clipGain.connect(destinationNode);
+		} else {
+			node.connect(destinationNode);
 		}
-		this.clipIterators.set(clip.id, iterator);
-		let consecutiveDroppedBufferCount = 0;
 
-		try {
-			for await (const { buffer, timestamp } of iterator) {
-				if (!this.editor.playback.getIsPlaying()) return;
-				if (sessionId !== this.playbackSessionId) return;
+		// Absolute Web Audio clock: when = contextStart + (clipStart - playStart)
+		const when =
+			this.playbackStartContextTime +
+			(clip.startTime - this.playbackStartTime);
 
-				const timelineTime = clip.startTime + (timestamp - clip.trimStart);
-				if (timelineTime >= clipEnd) break;
-
-				const node = audioContext.createBufferSource();
-				node.buffer = buffer;
-
-				// Apply per-clip playback rate (speed control)
-				const clipRate = (clip as unknown as { playbackRate?: number }).playbackRate;
-				if (typeof clipRate === "number" && clipRate !== 1.0) {
-					node.playbackRate.value = clipRate;
-				}
-
-				const destinationNode = this.getTrackDestination(clip.id);
-
-				const clipVolume = clip.volume ?? 1;
-				if (clipVolume < 1) {
-					const clipGain = audioContext.createGain();
-					clipGain.gain.value = clipVolume;
-					node.connect(clipGain);
-					clipGain.connect(destinationNode);
-				} else {
-					node.connect(destinationNode);
-				}
-
-				const startTimestamp =
-					this.playbackStartContextTime +
-					this.playbackLatencyCompensationSeconds +
-					(timelineTime - this.playbackStartTime);
-
-				if (startTimestamp >= audioContext.currentTime) {
-					node.start(startTimestamp);
-					consecutiveDroppedBufferCount = 0;
-				} else {
-					const offset = audioContext.currentTime - startTimestamp;
-					if (offset < buffer.duration) {
-						node.start(audioContext.currentTime, offset);
-						consecutiveDroppedBufferCount = 0;
-					} else {
-						consecutiveDroppedBufferCount += 1;
-						if (consecutiveDroppedBufferCount >= 5) {
-							const nextCompensationSeconds = Math.max(
-								this.playbackLatencyCompensationSeconds,
-								Math.min(0.25, offset + 0.01),
-							);
-							if (
-								nextCompensationSeconds >
-								this.playbackLatencyCompensationSeconds + 0.001
-							) {
-								this.playbackLatencyCompensationSeconds =
-									nextCompensationSeconds;
-							}
-							const resyncStartTime = this.getPlaybackTime();
-							this.clipIterators.delete(clip.id);
-							void this.runClipIterator({
-								clip,
-								startTime: resyncStartTime,
-								sessionId,
-							});
-							return;
-						}
-						continue;
-					}
-				}
-
-				this.queuedSources.add(node);
-				node.addEventListener("ended", () => {
-					node.disconnect();
-					this.queuedSources.delete(node);
-				});
-
-				const aheadTime = timelineTime - this.getPlaybackTime();
-				if (aheadTime >= 1) {
-					await this.waitUntilCaughtUp({ timelineTime, targetAhead: 1 });
-					if (sessionId !== this.playbackSessionId) return;
-				}
+		if (when >= audioContext.currentTime) {
+			// Clip bắt đầu ở tương lai — schedule chính xác
+			node.start(when, clip.trimStart, clip.duration);
+		} else {
+			// Seek vào giữa clip — offset vào buffer theo thời gian đã trôi qua
+			const lateBy = audioContext.currentTime - when;
+			if (lateBy >= clip.duration) {
+				// Clip đã kết thúc — không schedule
+				node.disconnect();
+				return;
 			}
-		} catch {
-			// Input may have been disposed (e.g., track deleted during playback)
+			node.start(
+				audioContext.currentTime,
+				clip.trimStart + lateBy,
+				clip.duration - lateBy,
+			);
 		}
 
-		this.clipIterators.delete(clip.id);
-		// don't remove from activeClipIds - prevents scheduler from restarting this clip
-		// the set is cleared on stopPlayback anyway
-	}
-
-	private waitUntilCaughtUp({
-		timelineTime,
-		targetAhead,
-	}: {
-		timelineTime: number;
-		targetAhead: number;
-	}): Promise<void> {
-		return new Promise((resolve) => {
-			const checkInterval = setInterval(() => {
-				if (!this.editor.playback.getIsPlaying()) {
-					clearInterval(checkInterval);
-					resolve();
-					return;
-				}
-
-				const playbackTime = this.getPlaybackTime();
-				if (timelineTime - playbackTime < targetAhead) {
-					clearInterval(checkInterval);
-					resolve();
-				}
-			}, 100);
+		this.activeSources.add(node);
+		node.addEventListener("ended", () => {
+			node.disconnect();
+			this.activeSources.delete(node);
 		});
 	}
 
 	private disposeSinks(): void {
-		for (const iterator of this.clipIterators.values()) {
-			void iterator.return();
+		for (const source of this.activeSources) {
+			try {
+				source.stop();
+			} catch {}
+			source.disconnect();
 		}
-		this.clipIterators.clear();
+		this.activeSources.clear();
 		this.activeClipIds.clear();
-
-		for (const input of this.inputs.values()) {
-			input.dispose();
-		}
-		this.inputs.clear();
-		this.sinks.clear();
+		this.clipBuffers.clear();
 
 		for (const [, nodes] of this.trackNodes) {
 			try {
@@ -517,34 +467,5 @@ export class AudioManager {
 			} catch {}
 		}
 		this.trackNodes.clear();
-	}
-
-	private async getAudioSink({
-		clip,
-	}: {
-		clip: AudioClipSource;
-	}): Promise<AudioBufferSink | null> {
-		const existingSink = this.sinks.get(clip.sourceKey);
-		if (existingSink) return existingSink;
-
-		try {
-			const input = new Input({
-				source: new BlobSource(clip.file),
-				formats: ALL_FORMATS,
-			});
-			const audioTrack = await input.getPrimaryAudioTrack();
-			if (!audioTrack) {
-				input.dispose();
-				return null;
-			}
-
-			const sink = new AudioBufferSink(audioTrack);
-			this.inputs.set(clip.sourceKey, input);
-			this.sinks.set(clip.sourceKey, sink);
-			return sink;
-		} catch (error) {
-			console.warn("Failed to initialize audio sink:", error);
-			return null;
-		}
 	}
 }
